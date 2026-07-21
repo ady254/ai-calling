@@ -16,9 +16,31 @@ logger = logging.getLogger("voice-agent")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "dev-internal-key-change-me")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "qtqlHrXyBpEXHx2JBPgx")
+
+# ── TTS voice (ElevenLabs) ────────────────────────────────────────────────
+# Model latency/quality ladder (pick via env):
+#   eleven_flash_v2_5      ~75ms   fastest, lowest fidelity
+#   eleven_turbo_v2_5      ~250ms  good balance (default)
+#   eleven_multilingual_v2 ~500ms+ best fidelity, too slow for live calls
 ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
+# stability/similarity/style/speed should MATCH what you tuned in the ElevenLabs
+# dashboard for this voice — otherwise it sounds different from your preview.
 ELEVENLABS_STABILITY = float(os.getenv("ELEVENLABS_STABILITY", "0.35"))
 ELEVENLABS_SIMILARITY_BOOST = float(os.getenv("ELEVENLABS_SIMILARITY_BOOST", "0.82"))
+ELEVENLABS_STYLE = float(os.getenv("ELEVENLABS_STYLE", "0.0"))          # [0.0-1.0] exaggeration
+ELEVENLABS_SPEED = float(os.getenv("ELEVENLABS_SPEED", "1.0"))          # [0.8-1.2] talking speed
+# speaker_boost lifts voice presence but adds a little latency — turn off for speed.
+ELEVENLABS_SPEAKER_BOOST = os.getenv("ELEVENLABS_SPEAKER_BOOST", "true").lower() == "true"
+
+# ── LLM (Gemini) ──────────────────────────────────────────────────────────
+# gemini-2.5-flash-lite is faster and has a higher free-tier request cap than
+# gemini-2.5-flash (which is 5 req/min free → 429s that break the call).
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+# ── Turn-taking (how long to wait after the caller stops before replying) ──
+# Lower max_delay = snappier replies; too low can cut the caller off mid-thought.
+ENDPOINTING_MIN_DELAY = float(os.getenv("ENDPOINTING_MIN_DELAY", "0.3"))
+ENDPOINTING_MAX_DELAY = float(os.getenv("ENDPOINTING_MAX_DELAY", "1.0"))
 
 
 class MyAgent(Agent):
@@ -201,22 +223,27 @@ async def entrypoint(ctx: JobContext):
     session = AgentSession(
         vad=silero.VAD.load(),
         stt=stt,
-        llm=google.LLM(model="gemini-2.5-flash"),
+        llm=google.LLM(model=GEMINI_MODEL),
         tts=elevenlabs.TTS(
             model=ELEVENLABS_MODEL,
             voice_id=voice_id,
             api_key=os.getenv("ELEVEN_API_KEY"),
             encoding="pcm_16000",
             language=language,
+            # Start speaking as soon as a sentence is ready instead of buffering
+            # chunks — cuts time-to-first-audio noticeably on live calls.
+            auto_mode=True,
             voice_settings=VoiceSettings(
                 stability=stability,
                 similarity_boost=similarity_boost,
-                use_speaker_boost=True,
+                style=ELEVENLABS_STYLE,
+                speed=ELEVENLABS_SPEED,
+                use_speaker_boost=ELEVENLABS_SPEAKER_BOOST,
             ),
         ),
         allow_interruptions=False,
         turn_handling=TurnHandlingOptions(
-            endpointing={"mode": "fixed", "min_delay": 0.3, "max_delay": 2.0},
+            endpointing={"mode": "fixed", "min_delay": ENDPOINTING_MIN_DELAY, "max_delay": ENDPOINTING_MAX_DELAY},
             interruption={"enabled": True, "discard_audio_if_uninterruptible": True},
         ),
     )
