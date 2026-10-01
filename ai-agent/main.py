@@ -204,19 +204,13 @@ async def entrypoint(ctx: JobContext):
             campaign_name = campaign.get("campaign_name")
             greeting = _build_greeting(language, contact_name, campaign_name)
 
-    # Deepgram's real-time nova-3 model (low-latency, needed for a live call)
-    # only supports a subset of languages directly — "en" and "hi" are on
-    # that list, but "ar" is not, so Arabic falls back to Deepgram's hosted
-    # Whisper model instead. Whisper covers Arabic but isn't a streaming-first
-    # model, so expect higher STT latency on Arabic calls than en/hi calls.
+    # Deepgram's streaming WebSockets API does NOT support Whisper models (returns 405).
+    # Deepgram nova-2 and nova-3 both support Arabic ("ar") natively!
     LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "ar": "Arabic", "es": "Spanish", "fr": "French"}
     language_name = LANGUAGE_NAMES.get(language, "English")
     instructions += f"\n\nRespond only in {language_name}, regardless of the language used elsewhere in these instructions."
 
-    if language == "ar":
-        stt = deepgram.STT(model="whisper-large")
-    else:
-        stt = deepgram.STT(model="nova-3", language=language)
+    stt = deepgram.STT(model="nova-3", language=language)
 
     my_agent = MyAgent(instructions=instructions)
 
@@ -264,6 +258,8 @@ async def entrypoint(ctx: JobContext):
         if role in ("user", "assistant") and text:
             label = "User" if role == "user" else "Agent"
             my_agent.transcript.append(f"{label}: {text}")
+#Check end-to-end latency for each call
+
 
     room_options = RoomOptions(
         audio_input=RoomInputOptions(),

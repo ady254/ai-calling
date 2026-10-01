@@ -1,3 +1,4 @@
+import time
 # Fix #32: All imports moved to the top of the file (previously split mid-file)
 import json
 import logging
@@ -904,9 +905,21 @@ async def get_analytics(
     db: AsyncSession = Depends(get_db),
     user_id: str = Depends(get_current_user)
 ):
+    start = time.perf_counter()
+
+    db_start = time.perf_counter()
+
     business = await get_user_business(db, user_id)
+
+    db_elapsed = (time.perf_counter() - db_start) * 1000
+    print(f"GET_USER_BUSINESS_MS={db_elapsed:.2f}")
+
     biz_id = business.id
 
+
+
+
+    
     total_calls = (await db.execute(
         select(func.count(CallLog.id)).where(CallLog.business_id == biz_id)
     )).scalar() or 0
@@ -978,7 +991,7 @@ async def get_analytics(
         if day_str in trends_dict:
             trends_dict[day_str] = row.calls
 
-    return AnalyticsOut(
+    result = AnalyticsOut(
         total_calls=total_calls,
         completed_calls=completed_calls,
         failed_calls=failed_calls,
@@ -987,3 +1000,11 @@ async def get_analytics(
         total_contacts=total_contacts,
         call_trends=[{"date": k, "calls": v} for k, v in trends_dict.items()]
     )
+
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    print(f"ANALYTICS_TOTAL_MS={elapsed_ms:.2f}")
+
+    return result
+    
+
+
