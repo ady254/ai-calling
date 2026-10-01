@@ -20,9 +20,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("DO $$ BEGIN CREATE TYPE campaignstatus AS ENUM ('draft','scheduled','active','paused','completed','cancelled'); EXCEPTION WHEN duplicate_object THEN null; END $$;")
-    op.execute("DO $$ BEGIN CREATE TYPE contactstatus AS ENUM ('new','contacted','interested','not_interested','no_answer','callback','converted','do_not_call'); EXCEPTION WHEN duplicate_object THEN null; END $$;")
-    op.execute("DO $$ BEGIN CREATE TYPE campaigncontactstatus AS ENUM ('pending','calling','completed','failed','skipped'); EXCEPTION WHEN duplicate_object THEN null; END $$;")
+    op.execute("CREATE TYPE campaignstatus AS ENUM ('draft','scheduled','active','paused','completed','cancelled') IF NOT EXISTS")
+    op.execute("CREATE TYPE contactstatus AS ENUM ('new','contacted','interested','not_interested','no_answer','callback','converted','do_not_call') IF NOT EXISTS")
+    op.execute("CREATE TYPE campaigncontactstatus AS ENUM ('pending','calling','completed','failed','skipped') IF NOT EXISTS")
 
     op.create_table(
         'users',
