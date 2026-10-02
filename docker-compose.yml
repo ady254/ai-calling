@@ -55,7 +55,7 @@ services:
       - ./.env
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:${DB_PASSWORD?DB_PASSWORD must be set in .env}@postgres:5432/aicalling
-      - ALLOWED_ORIGINS=http://localhost:3000,http://frontend:3000
+      - ALLOWED_ORIGINS=http://localhost:3000,http://frontend:3000,https://innvox.in,https://www.innvox.in
     depends_on:
       postgres:
         condition: service_healthy
@@ -125,13 +125,13 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - NEXT_PUBLIC_API_URL=http://localhost:8000
+        - NEXT_PUBLIC_API_URL=https://v3api.innvox.in
         - NEXT_PUBLIC_LIVEKIT_URL=${LIVEKIT_URL:-wss://innvox-um8kvrmw.livekit.cloud}
     container_name: aicalling-frontend
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_API_URL=https://v3api.innvox.in
       - NEXT_PUBLIC_LIVEKIT_URL=${LIVEKIT_URL:-wss://innvox-um8kvrmw.livekit.cloud}
     depends_on:
       - backend
