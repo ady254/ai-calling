@@ -20,6 +20,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
     networks:
       - aicalling-net
 
@@ -38,6 +39,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
     networks:
       - aicalling-net
 
@@ -63,6 +65,7 @@ services:
         condition: service_healthy
     volumes:
       - backend-audio:/app/audio
+    restart: unless-stopped
     networks:
       - aicalling-net
 
@@ -89,6 +92,7 @@ services:
         condition: service_healthy
       backend:
         condition: service_healthy
+    restart: unless-stopped
     networks:
       - aicalling-net
 
@@ -135,6 +139,7 @@ services:
       - NEXT_PUBLIC_LIVEKIT_URL=${LIVEKIT_URL:-wss://innvox-um8kvrmw.livekit.cloud}
     depends_on:
       - backend
+    restart: unless-stopped
     networks:
       - aicalling-net
 
