@@ -402,7 +402,7 @@ docker compose logs -f backend       # watch backend startup — Ctrl+C to stop
 
 **Goal:** put the dashboard online for free.
 
-1. Go to [vercel.com](https://vercel.com) → **Add New → Project → Import** your GitHub repo.
+1. Go to [vercel.com](https://vercel.com) → **Add New → Project → Import** your GitHub repo.![alt text](image.png)
 2. Set **Root Directory = `frontend`** — this is important, your website lives in that subfolder.
    Vercel auto-detects Next.js + pnpm.
 3. Add **Environment Variables** before clicking Deploy:
@@ -551,3 +551,4 @@ You don't need any of this to launch. Get Phase 9 working first. 💪
 backend + worker + AI agent + Caddy) · **Neon** (free Postgres) · **Upstash** (free Redis) ·
 **Vercel** (free website) · **1 cheap domain** (for permanent HTTPS webhooks).
 The production-grade version lives in `docs/DEPLOYMENT.md`.*
+  

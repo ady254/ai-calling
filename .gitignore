@@ -52,3 +52,10 @@ test_out.txt
 
 # Docker
 docker-compose.override.yml
+
+# Terraform — NEVER commit these (contain secrets + machine state)
+terraform/aws/terraform.tfvars
+terraform/aws/.terraform/
+terraform/aws/.terraform.lock.hcl
+terraform/aws/terraform.tfstate
+terraform/aws/terraform.tfstate.backup
