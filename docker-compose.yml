@@ -56,7 +56,6 @@ services:
     env_file:
       - ./.env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:${DB_PASSWORD?DB_PASSWORD must be set in .env}@postgres:5432/aicalling
       - ALLOWED_ORIGINS=http://localhost:3000,http://frontend:3000,https://innvox.in,https://www.innvox.in,https://ai-calling-seven.vercel.app
     depends_on:
       postgres:
@@ -83,8 +82,7 @@ services:
     command: ["arq", "app.worker.WorkerSettings"]
     env_file:
       - ./.env
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:${DB_PASSWORD?DB_PASSWORD must be set in .env}@postgres:5432/aicalling
+
     depends_on:
       postgres:
         condition: service_healthy
