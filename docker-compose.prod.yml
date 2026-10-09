@@ -12,15 +12,34 @@ services:
     networks:
       - aicalling-net
 
-  # Disable local postgres — using Neon (managed, free) instead
+  # Override backend: remove dependencies on local postgres/redis
+  # and let DATABASE_URL come from .env (Neon PostgreSQL)
+  backend:
+    depends_on: []
+    environment:
+      - ALLOWED_ORIGINS=https://ai-calling-seven.vercel.app,https://innvox.in,https://www.innvox.in
+
+  # Override worker: remove dependencies on local postgres/redis, only wait for backend
+  worker:
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - ALLOWED_ORIGINS=https://ai-calling-seven.vercel.app,https://innvox.in,https://www.innvox.in
+
+  # Override ai-agent: remove dependency on local redis (uses Upstash from .env)
+  ai-agent:
+    depends_on: []
+
+  # Disable local postgres — using Neon (managed cloud) instead
   postgres:
     profiles: ["disabled"]
 
-  # Disable local redis — using Upstash (managed, free) instead
+  # Disable local redis — using Upstash (managed cloud) instead
   redis:
     profiles: ["disabled"]
 
-  # Disable the frontend container — using Vercel instead
+  # Disable local frontend container — hosted on Vercel
   frontend:
     profiles: ["disabled"]
 
