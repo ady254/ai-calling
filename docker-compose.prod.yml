@@ -12,24 +12,23 @@ services:
     networks:
       - aicalling-net
 
-  # Override backend: remove dependencies on local postgres/redis
-  # and let DATABASE_URL come from .env (Neon PostgreSQL)
+  # Reset depends_on so backend doesn't wait for local postgres/redis
   backend:
-    depends_on: []
+    depends_on: !reset []
     environment:
       - ALLOWED_ORIGINS=https://ai-calling-seven.vercel.app,https://innvox.in,https://www.innvox.in
 
-  # Override worker: remove dependencies on local postgres/redis, only wait for backend
+  # Reset depends_on so worker only waits for backend
   worker:
-    depends_on:
+    depends_on: !reset
       backend:
         condition: service_healthy
     environment:
       - ALLOWED_ORIGINS=https://ai-calling-seven.vercel.app,https://innvox.in,https://www.innvox.in
 
-  # Override ai-agent: remove dependency on local redis (uses Upstash from .env)
+  # Reset depends_on so ai-agent doesn't wait for local redis
   ai-agent:
-    depends_on: []
+    depends_on: !reset []
 
   # Disable local postgres — using Neon (managed cloud) instead
   postgres:
