@@ -1,0 +1,28 @@
+services:
+  # Caddy: handles HTTPS + proxies traffic to the backend container
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    networks:
+      - aicalling-net
+
+  # Disable local postgres — using Neon (managed, free) instead
+  postgres:
+    profiles: ["disabled"]
+
+  # Disable local redis — using Upstash (managed, free) instead
+  redis:
+    profiles: ["disabled"]
+
+  # Disable the frontend container — using Vercel instead
+  frontend:
+    profiles: ["disabled"]
+
+volumes:
+  caddy_data:
