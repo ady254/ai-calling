@@ -18,28 +18,13 @@ class Settings(BaseSettings):
         if isinstance(data, dict) and "DATABASE_URL" in data:
             val = data["DATABASE_URL"]
             if isinstance(val, str):
-                # asyncpg does not support sslmode or channel_binding query params
+                # asyncpg does not accept query parameters like sslmode, channel_binding etc.
+                # Strip the query string entirely from the URL so SQLAlchemy doesn't pass them as kwargs
                 import urllib.parse
                 parsed = urllib.parse.urlsplit(val)
-                if parsed.query:
-                    q_params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-                    # Filter out unsupported asyncpg params and keep or normalize ssl
-                    filtered = []
-                    has_ssl = False
-                    for k, v in q_params:
-                        if k == "sslmode":
-                            filtered.append(("ssl", "require"))
-                            has_ssl = True
-                        elif k in ("channel_binding", "sslrootcert"):
-                            continue
-                        elif k == "ssl":
-                            has_ssl = True
-                            filtered.append((k, v))
-                        else:
-                            filtered.append((k, v))
-                    new_query = urllib.parse.urlencode(filtered)
-                    data["DATABASE_URL"] = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
+                data["DATABASE_URL"] = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
         return data
+
     SECRET_KEY: str = Field(..., description="JWT signing secret")
     ALGORITHM: str = Field(default="HS256")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=60)

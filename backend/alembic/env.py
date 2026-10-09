@@ -31,23 +31,17 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 raw_db_url = os.getenv("DATABASE_URL", "")
+is_cloud_db = False
 if raw_db_url:
     import urllib.parse
     parsed = urllib.parse.urlsplit(raw_db_url)
-    if parsed.query:
-        q_params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        filtered = []
-        for k, v in q_params:
-            if k == "sslmode":
-                filtered.append(("ssl", "require"))
-            elif k in ("channel_binding", "sslrootcert"):
-                continue
-            else:
-                filtered.append((k, v))
-        new_query = urllib.parse.urlencode(filtered)
-        raw_db_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
+    if "localhost" not in raw_db_url and "127.0.0.1" not in raw_db_url and "@postgres:" not in raw_db_url:
+        is_cloud_db = True
+    # Strip query parameters (like sslmode, channel_binding) which break asyncpg
+    raw_db_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 config.set_main_option("sqlalchemy.url", raw_db_url)
+
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
@@ -92,10 +86,15 @@ async def run_async_migrations() -> None:
 
     """
 
+    connect_args = {}
+    if is_cloud_db:
+        connect_args["ssl"] = "require"
+
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
 
     async with connectable.connect() as connection:
