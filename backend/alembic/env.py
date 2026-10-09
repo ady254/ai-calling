@@ -30,7 +30,24 @@ if config.config_file_name is not None:
 # target_metadata = mymodel.Base.metadata
 target_metadata = Base.metadata
 
-config.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL"))
+raw_db_url = os.getenv("DATABASE_URL", "")
+if raw_db_url:
+    import urllib.parse
+    parsed = urllib.parse.urlsplit(raw_db_url)
+    if parsed.query:
+        q_params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        filtered = []
+        for k, v in q_params:
+            if k == "sslmode":
+                filtered.append(("ssl", "require"))
+            elif k in ("channel_binding", "sslrootcert"):
+                continue
+            else:
+                filtered.append((k, v))
+        new_query = urllib.parse.urlencode(filtered)
+        raw_db_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
+
+config.set_main_option("sqlalchemy.url", raw_db_url)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
