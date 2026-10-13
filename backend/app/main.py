@@ -69,6 +69,12 @@ app = FastAPI(
     description="Backend API for V3 AI Voice Calling Platform",
     version="1.0.0",
     lifespan=lifespan,
+    # Fix: Disable automatic trailing-slash redirects (e.g. /campaign → /campaign/).
+    # Behind a TLS-terminating reverse proxy (Caddy), Uvicorn generates redirect
+    # URLs with http:// instead of https://, causing browsers to block them as
+    # mixed content.  Disabling this means /campaign and /campaign/ both resolve
+    # to the same handler without a redirect.
+    redirect_slashes=False,
 )
 
 # Rate limiting
