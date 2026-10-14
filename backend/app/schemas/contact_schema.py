@@ -53,8 +53,8 @@ class ContactOut(BaseModel):
     industry: Optional[str] = None
     lead_score: Optional[int] = None
     pipeline_stage: Optional[str] = None
-    ai_insights: dict = {}
-    custom_fields: dict = {}
+    ai_insights: Optional[dict] = None
+    custom_fields: Optional[dict] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
