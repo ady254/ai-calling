@@ -40,15 +40,8 @@ _CAMPAIGN_STATUS_KEY = "campaign:status:{campaign_id}"
 
 
 def _parse_redis_settings() -> RedisSettings:
-    """Parse REDIS_URL from settings into an ARQ RedisSettings object."""
-    import urllib.parse
-    parsed = urllib.parse.urlparse(settings.REDIS_URL)
-    return RedisSettings(
-        host=parsed.hostname or "localhost",
-        port=parsed.port or 6379,
-        password=parsed.password,
-        database=int(parsed.path.lstrip("/")) if parsed.path.lstrip("/") else 0,
-    )
+    """Parse REDIS_URL from settings into an ARQ RedisSettings object (handles redis:// and rediss:// with SSL)."""
+    return RedisSettings.from_dsn(settings.REDIS_URL)
 
 
 async def _get_redis_pool() -> arq.ArqRedis:

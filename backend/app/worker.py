@@ -35,15 +35,8 @@ logger = logging.getLogger("worker")
 
 
 def parse_redis_url(url: str) -> RedisSettings:
-    """Parse a redis:// URL into an ARQ RedisSettings object."""
-    import urllib.parse
-    parsed = urllib.parse.urlparse(url)
-    return RedisSettings(
-        host=parsed.hostname or "localhost",
-        port=parsed.port or 6379,
-        password=parsed.password,
-        database=int(parsed.path.lstrip("/")) if parsed.path.lstrip("/") else 0,
-    )
+    """Parse a redis:// or rediss:// URL into an ARQ RedisSettings object with SSL support."""
+    return RedisSettings.from_dsn(url)
 
 
 async def startup(ctx: dict) -> None:
