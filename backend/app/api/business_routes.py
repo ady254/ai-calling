@@ -10,6 +10,7 @@ from app.dependencies.business import get_user_business
 router = APIRouter()
 
 
+@router.post("")
 @router.post("/")
 async def create_business_route(
     data: BusinessCreate,

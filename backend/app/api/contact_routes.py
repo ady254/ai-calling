@@ -33,6 +33,7 @@ PIPELINE_LABELS = {
 }
 
 
+@router.post("", response_model=ContactOut)
 @router.post("/", response_model=ContactOut)
 async def create_contact_route(
     data: ContactCreate,
@@ -44,6 +45,7 @@ async def create_contact_route(
     return await create_contact(db, data)
 
 
+@router.get("", response_model=list[ContactOut])
 @router.get("/", response_model=list[ContactOut])
 async def list_contacts_route(
     skip: int = Query(0, ge=0),

@@ -16,6 +16,7 @@ from app.dependencies.business import get_user_business
 
 router = APIRouter()
 
+@router.post("", response_model=CampaignOut)
 @router.post("/", response_model=CampaignOut)
 async def create_campaign_route(
     data: CampaignCreate,
@@ -26,6 +27,7 @@ async def create_campaign_route(
     data.business_id = business.id
     return await create_campaign(db, data)
 
+@router.get("", response_model=list[CampaignOut])
 @router.get("/", response_model=list[CampaignOut])
 async def list_campaigns_route(
     skip: int = Query(0, ge=0),
