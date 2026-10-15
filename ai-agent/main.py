@@ -217,7 +217,10 @@ async def entrypoint(ctx: JobContext):
     session = AgentSession(
         vad=silero.VAD.load(),
         stt=stt,
-        llm=google.LLM(model=GEMINI_MODEL),
+        llm=google.LLM(
+            model=GEMINI_MODEL,
+            api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"),
+        ),
         tts=elevenlabs.TTS(
             model=ELEVENLABS_MODEL,
             voice_id=voice_id,
