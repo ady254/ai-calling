@@ -22,10 +22,10 @@ ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "qtqlHrXyBpEXHx2JBPgx")
 #   eleven_flash_v2_5      ~75ms   fastest, lowest fidelity
 #   eleven_turbo_v2_5      ~250ms  good balance (default)
 #   eleven_multilingual_v2 ~500ms+ best fidelity, too slow for live calls
-ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
+ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_flash_v2_5")
 # stability/similarity/style/speed should MATCH what you tuned in the ElevenLabs
 # dashboard for this voice — otherwise it sounds different from your preview.
-ELEVENLABS_STABILITY = float(os.getenv("ELEVENLABS_STABILITY", "0.35"))
+ELEVENLABS_STABILITY = float(os.getenv("ELEVENLABS_STABILITY", "0.60"))
 ELEVENLABS_SIMILARITY_BOOST = float(os.getenv("ELEVENLABS_SIMILARITY_BOOST", "0.82"))
 ELEVENLABS_STYLE = float(os.getenv("ELEVENLABS_STYLE", "0.0"))          # [0.0-1.0] exaggeration
 ELEVENLABS_SPEED = float(os.getenv("ELEVENLABS_SPEED", "1.0"))          # [0.8-1.2] talking speed
@@ -40,7 +40,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 # ── Turn-taking (how long to wait after the caller stops before replying) ──
 # Lower max_delay = snappier replies; too low can cut the caller off mid-thought.
 ENDPOINTING_MIN_DELAY = float(os.getenv("ENDPOINTING_MIN_DELAY", "0.3"))
-ENDPOINTING_MAX_DELAY = float(os.getenv("ENDPOINTING_MAX_DELAY", "1.0"))
+ENDPOINTING_MAX_DELAY = float(os.getenv("ENDPOINTING_MAX_DELAY", "0.5"))
 
 
 class MyAgent(Agent):
@@ -114,8 +114,6 @@ def _build_greeting(language: str, contact_name: str | None, campaign_name: str 
     so it can't rely on the LLM's language instruction to translate it."""
     templates = {
         "en": ("Hi {name}, I am calling about {campaign}.", "Hi, I am calling about {campaign}."),
-        "es": ("Hola {name}, le llamo por {campaign}.", "Hola, le llamo por {campaign}."),
-        "fr": ("Bonjour {name}, je vous appelle au sujet de {campaign}.", "Bonjour, je vous appelle au sujet de {campaign}."),
         "hi": ("Namaste {name}, main {campaign} ke baare mein baat karne ke liye call kar raha hoon.", "Namaste, main {campaign} ke baare mein baat karne ke liye call kar raha hoon."),
         "ar": ("مرحباً {name}، أتصل بك بخصوص {campaign}.", "مرحباً، أتصل بك بخصوص {campaign}."),
     }
@@ -238,7 +236,7 @@ async def entrypoint(ctx: JobContext):
                 use_speaker_boost=ELEVENLABS_SPEAKER_BOOST,
             ),
         ),
-        allow_interruptions=False,
+        allow_interruptions=True,
         turn_handling=TurnHandlingOptions(
             endpointing={"mode": "fixed", "min_delay": ENDPOINTING_MIN_DELAY, "max_delay": ENDPOINTING_MAX_DELAY},
             interruption={"enabled": True, "discard_audio_if_uninterruptible": True},
