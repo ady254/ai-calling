@@ -76,6 +76,6 @@ class TTSProvider(Protocol):
         text: str,
         voice_id: str | None = None,
         **kwargs: Any,
-    ) -> bytes:
+ ) -> bytes:
         """Synthesize text into audio bytes."""
         ...

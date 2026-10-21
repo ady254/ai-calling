@@ -5,9 +5,17 @@ import aiohttp
 from dotenv import load_dotenv
 from livekit.agents import AgentSession, Agent, JobContext, WorkerOptions, cli, TurnHandlingOptions
 from livekit.agents.voice.room_io import RoomInputOptions, RoomOptions
-from livekit.plugins import google, deepgram, silero, elevenlabs
-from livekit.plugins.elevenlabs.tts import VoiceSettings
+from livekit.plugins import silero
 import os
+
+from providers import (
+    get_stt_provider,
+    get_llm_provider,
+    get_tts_provider,
+    STTProvider,
+    LLMProvider,
+    TTSProvider,
+)
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -204,37 +212,34 @@ async def entrypoint(ctx: JobContext):
 
     # Deepgram's streaming WebSockets API does NOT support Whisper models (returns 405).
     # Deepgram nova-2 and nova-3 both support Arabic ("ar") natively!
-    LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "ar": "Arabic", "es": "Spanish", "fr": "French"}
+    LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "ar": "Arabic"}
     language_name = LANGUAGE_NAMES.get(language, "English")
     instructions += f"\n\nRespond only in {language_name}, regardless of the language used elsewhere in these instructions."
 
-    stt = deepgram.STT(model="nova-3", language=language)
+    # Injectable providers for STT, LLM, and TTS (SOLID B1 fix)
+    # Providers can be overridden via campaign config or environment variables
+    campaign_data = campaign or {}
+    stt_provider = get_stt_provider(campaign_data.get("stt_provider"))
+    llm_provider = get_llm_provider(campaign_data.get("llm_provider"))
+    tts_provider = get_tts_provider(campaign_data.get("tts_provider"))
+
+    stt = stt_provider.build_stt(model="nova-3", language=language)
 
     my_agent = MyAgent(instructions=instructions)
 
     session = AgentSession(
         vad=silero.VAD.load(),
         stt=stt,
-        llm=google.LLM(
-            model=GEMINI_MODEL,
-            api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"),
-        ),
-        tts=elevenlabs.TTS(
+        llm=llm_provider.build_llm(model=GEMINI_MODEL),
+        tts=tts_provider.build_tts(
             model=ELEVENLABS_MODEL,
             voice_id=voice_id,
-            api_key=os.getenv("ELEVEN_API_KEY"),
-            encoding="pcm_16000",
             language=language,
-            # Start speaking as soon as a sentence is ready instead of buffering
-            # chunks — cuts time-to-first-audio noticeably on live calls.
-            auto_mode=True,
-            voice_settings=VoiceSettings(
-                stability=stability,
-                similarity_boost=similarity_boost,
-                style=ELEVENLABS_STYLE,
-                speed=ELEVENLABS_SPEED,
-                use_speaker_boost=ELEVENLABS_SPEAKER_BOOST,
-            ),
+            stability=stability,
+            similarity_boost=similarity_boost,
+            style=ELEVENLABS_STYLE,
+            speed=ELEVENLABS_SPEED,
+            use_speaker_boost=ELEVENLABS_SPEAKER_BOOST,
         ),
         allow_interruptions=True,
         turn_handling=TurnHandlingOptions(

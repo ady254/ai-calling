@@ -10,7 +10,14 @@ from app.core.config import settings
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-client = ElevenLabs(api_key=settings.ELEVEN_API_KEY)
+_client: ElevenLabs | None = None
+
+
+def _get_elevenlabs_client() -> ElevenLabs:
+    global _client
+    if _client is None:
+        _client = ElevenLabs(api_key=settings.ELEVEN_API_KEY)
+    return _client
 
 # Use a real ElevenLabs voice ID — "Bella" voice
 VOICE_ID = "ibbx9zDYGvLgtYzRbqqG"
@@ -31,6 +38,7 @@ def text_to_speech(text: str) -> str:
 
     try:
         # Generate audio via ElevenLabs
+        client = _get_elevenlabs_client()
         audio_generator = client.text_to_speech.convert(
             text=text,
             voice_id=VOICE_ID,

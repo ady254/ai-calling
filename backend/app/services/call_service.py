@@ -8,13 +8,19 @@ from fastapi import HTTPException
 
 from app.models.contact import Contact, ContactStatus
 from app.models.call_log import CallLog
+from app.providers import TelephonyProvider, get_telephony_provider
 from app.services.twilio_service import make_outbound_call
 
 logger = logging.getLogger(__name__)
 
-async def start_call(db: AsyncSession, contact_id: str, campaign_id: str | None = None):
+async def start_call(
+    db: AsyncSession,
+    contact_id: str,
+    campaign_id: str | None = None,
+    telephony_provider: TelephonyProvider | None = None,
+):
     """
-    Initiate an outbound call via Twilio to the contact.
+    Initiate an outbound call via TelephonyProvider to the contact.
     Optionally pass campaign_id for context.
     """
     stmt = select(Contact).filter(Contact.id == UUID(contact_id))
@@ -32,12 +38,13 @@ async def start_call(db: AsyncSession, contact_id: str, campaign_id: str | None 
 
     logger.info(f"Starting outbound call to {contact.phone_number}")
 
-    # make_outbound_call uses Twilio's synchronous `requests`-based SDK; run
+    # make_outbound_call uses synchronous SDK calls under the hood; run
     # it in a thread so it doesn't block the event loop for the duration of
-    # the HTTP round-trip (same fix already applied to the campaign executor).
+    # the HTTP round-trip.
+    provider = telephony_provider or get_telephony_provider()
     call_result = await asyncio.to_thread(
-        make_outbound_call,
-        to_number=contact.phone_number,
+        provider.make_call,
+        to=contact.phone_number,
         campaign_id=campaign_id,
         contact_id=contact_id,
     )

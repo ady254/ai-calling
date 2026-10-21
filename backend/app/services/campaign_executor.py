@@ -16,6 +16,7 @@ Fix #5 / #27: Replaced the process-local `_running_campaigns` dict and
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Any
 from uuid import UUID
 
 import arq
@@ -31,6 +32,7 @@ from app.models.campaign import Campaign, CampaignStatus
 from app.models.campaign_contact import CampaignContact, CampaignContactStatus
 from app.models.contact import Contact, ContactStatus
 from app.models.call_log import CallLog
+from app.providers import TelephonyProvider, get_telephony_provider
 from app.services.twilio_service import make_outbound_call
 
 logger = logging.getLogger(__name__)
@@ -202,108 +204,139 @@ async def get_campaign_progress(db: AsyncSession, campaign_id: UUID) -> dict | N
     }
 
 
-# ── Internal: campaign processing loop (called by ARQ worker) ──
+# ── Single-responsibility sub-routines for campaign orchestration ────
 
-async def _process_campaign(ctx: dict, campaign_id: UUID, business_id: UUID) -> None:
+async def _check_control_flag(redis: Any, campaign_id: UUID) -> str | None:
     """
-    Core campaign loop. Iterates through pending contacts and calls each one.
+    Poll the Redis control flag for PAUSED or CANCELLED signals.
+    Returns 'PAUSED', 'CANCELLED', or None if running normally.
+    """
+    if not redis:
+        return None
+
+    status_key = _CAMPAIGN_STATUS_KEY.format(campaign_id=str(campaign_id))
+    flag = await redis.get(status_key)
+    if flag is not None:
+        flag_str = flag.decode() if isinstance(flag, bytes) else flag
+        if flag_str in ("PAUSED", "CANCELLED"):
+            logger.info(f"Campaign {campaign_id} {flag_str.lower()} by Redis flag")
+            return flag_str
+    return None
+
+
+async def _fetch_next_pending_contact(campaign_id: UUID) -> UUID | None:
+    """
+    Fetch the next pending contact ID for this campaign in FIFO order.
+    Returns None if no pending contacts remain.
+    """
+    async with AsyncSessionLocal() as db:
+        stmt = (
+            select(CampaignContact.contact_id)
+            .filter(
+                CampaignContact.campaign_id == campaign_id,
+                CampaignContact.call_status == CampaignContactStatus.PENDING,
+            )
+            .order_by(CampaignContact.created_at.asc())
+            .limit(1)
+        )
+        result = await db.execute(stmt)
+        return result.scalar_one_or_none()
+
+
+async def _mark_calling(campaign_id: UUID, contact_id: UUID) -> None:
+    """Update contact state to CALLING and record dial timestamp."""
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(CampaignContact)
+            .where(
+                CampaignContact.campaign_id == campaign_id,
+                CampaignContact.contact_id == contact_id,
+            )
+            .values(
+                call_status=CampaignContactStatus.CALLING,
+                called_at=datetime.now(timezone.utc),
+            )
+        )
+        await db.commit()
+
+
+async def _finalize_campaign(campaign_id: UUID, status: CampaignStatus) -> None:
+    """Update campaign terminal or pause status."""
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(Campaign)
+            .where(Campaign.id == campaign_id)
+            .values(status=status)
+        )
+        await db.commit()
+    logger.info(f"Campaign {campaign_id} status updated to {status.value if hasattr(status, 'value') else status}")
+
+
+# ── Internal: campaign processing orchestrator (called by ARQ worker) ──
+
+async def _process_campaign(
+    ctx: dict,
+    campaign_id: UUID,
+    business_id: UUID,
+    telephony_provider: TelephonyProvider | None = None,
+) -> None:
+    """
+    Core campaign loop orchestrator.
+    Coordinates control flag checks, contact retrieval, dialing, resolution,
+    and completion status transitions using dedicated single-responsibility helpers.
     Runs as an ARQ background task inside worker.py.
-
-    Pause / stop is coordinated via a Redis flag
-    (`campaign:status:{campaign_id}`) that is set by
-    `pause_campaign_execution` / `stop_campaign_execution`.
     """
-    campaign_key = str(campaign_id)
-    status_key = _CAMPAIGN_STATUS_KEY.format(campaign_id=campaign_key)
-
-    # The ARQ worker passes its Redis connection via ctx["redis"].
     redis = ctx.get("redis")
-
     logger.info(f"Processing campaign {campaign_id}")
 
     try:
-        async with AsyncSessionLocal() as db:
-            await db.execute(
-                update(Campaign)
-                .where(Campaign.id == campaign_id)
-                .values(status=CampaignStatus.ACTIVE)
-            )
-            await db.commit()
+        await _finalize_campaign(campaign_id, CampaignStatus.ACTIVE)
 
         while True:
-            # ── Poll the Redis control flag ──
-            if redis:
-                flag = await redis.get(status_key)
-                if flag is not None:
-                    flag_str = flag.decode() if isinstance(flag, bytes) else flag
-                    if flag_str == "PAUSED":
-                        logger.info(f"Campaign {campaign_id} paused by Redis flag")
-                        # DB status already updated by pause_campaign_execution.
-                        return
-                    if flag_str == "CANCELLED":
-                        logger.info(f"Campaign {campaign_id} cancelled by Redis flag")
-                        # DB status already updated by stop_campaign_execution.
-                        return
+            # 1. Check Redis control flag for pause/cancel
+            flag = await _check_control_flag(redis, campaign_id)
+            if flag in ("PAUSED", "CANCELLED"):
+                return
 
-            # ── Fetch next pending contact ──
-            async with AsyncSessionLocal() as db:
-                stmt = (
-                    select(CampaignContact)
-                    .filter(
-                        CampaignContact.campaign_id == campaign_id,
-                        CampaignContact.call_status == CampaignContactStatus.PENDING,
-                    )
-                    .order_by(CampaignContact.created_at.asc())
-                    .limit(1)
-                )
-                result = await db.execute(stmt)
-                cc = result.scalar_one_or_none()
+            # 2. Fetch next pending contact
+            contact_id = await _fetch_next_pending_contact(campaign_id)
+            if not contact_id:
+                logger.info(f"Campaign {campaign_id}: no more pending contacts")
+                break
 
-                if not cc:
-                    logger.info(f"Campaign {campaign_id}: no more pending contacts")
-                    break
+            # 3. Transition contact state to CALLING
+            await _mark_calling(campaign_id, contact_id)
 
-                cc.call_status = CampaignContactStatus.CALLING
-                cc.called_at = datetime.now(timezone.utc)
-                await db.commit()
+            # 4. Dispatch outbound call
+            await _call_single_contact(
+                campaign_id,
+                business_id,
+                contact_id,
+                telephony_provider=telephony_provider,
+            )
 
-                contact_id = cc.contact_id
-
-            await _call_single_contact(campaign_id, business_id, contact_id)
-
-            # Bug #2 fix: Wait for the Twilio status-callback to resolve this
-            # contact from CALLING → COMPLETED/FAILED/SKIPPED before moving to
-            # the next one. Poll every 3 s, time-out after 5 minutes.
+            # 5. Wait for call resolution (Twilio status-callback or timeout)
             await _wait_for_contact_resolution(campaign_id, contact_id, timeout_seconds=300)
 
             # Brief delay between calls (Twilio rate limiting)
             await asyncio.sleep(2)
 
-        async with AsyncSessionLocal() as db:
-            await db.execute(
-                update(Campaign)
-                .where(Campaign.id == campaign_id)
-                .values(status=CampaignStatus.COMPLETED)
-            )
-            await db.commit()
-
+        # 6. Mark campaign completed
+        await _finalize_campaign(campaign_id, CampaignStatus.COMPLETED)
         logger.info(f"Campaign {campaign_id} completed successfully")
 
     except Exception as e:
         logger.error(f"Campaign {campaign_id} failed: {e}", exc_info=True)
-        async with AsyncSessionLocal() as db:
-            await db.execute(
-                update(Campaign)
-                .where(Campaign.id == campaign_id)
-                .values(status=CampaignStatus.PAUSED)
-            )
-            await db.commit()
+        await _finalize_campaign(campaign_id, CampaignStatus.PAUSED)
 
 
 async def _call_single_contact(
-    campaign_id: UUID, business_id: UUID, contact_id: UUID
+    campaign_id: UUID,
+    business_id: UUID,
+    contact_id: UUID,
+    telephony_provider: TelephonyProvider | None = None,
 ) -> None:
-    """Process a single contact: make outbound call via Twilio."""
+    """Process a single contact: make outbound call via TelephonyProvider."""
     async with AsyncSessionLocal() as db:
         contact = (await db.execute(
             select(Contact).filter(Contact.id == contact_id)
@@ -322,20 +355,19 @@ async def _call_single_contact(
             return
 
         try:
-            # Fix #8: Twilio SDK uses the synchronous `requests` library under
-            # the hood. Running it directly blocks the asyncio event loop for
-            # the duration of the HTTP call (200–800ms), freezing all concurrent
-            # requests. asyncio.to_thread() offloads it to a thread pool.
+            # Fix #8: Telephony SDK uses synchronous requests under the hood.
+            # Running it directly blocks the event loop; asyncio.to_thread offloads it.
+            provider = telephony_provider or get_telephony_provider()
             call_result = await asyncio.to_thread(
-                make_outbound_call,
-                to_number=contact.phone_number,
+                provider.make_call,
+                to=contact.phone_number,
                 campaign_id=str(campaign_id),
                 contact_id=str(contact_id),
             )
 
             if call_result.get("status") == "initiated":
                 call_log = CallLog(
-                    contact_id=contact_id,
+                    contact_id=contact_id, 
                     campaign_id=campaign_id,
                     business_id=business_id,
                     status="started",
