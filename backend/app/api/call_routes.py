@@ -245,8 +245,12 @@ async def twilio_twiml(
         # Record the bridged conversation (both legs) so it can be played back
         # in Call Details. Twilio POSTs the finished recording to the callback
         # below, which stores the media URL against this call's CallLog row.
+        # timeout="120": Twilio aborts ringing if the SIP leg fails to pick up in 120s.
+        # time_limit=7200 (2h max duration guard): Prevents runaway billing if a room gets stuck.
         recording_callback = f"{settings.BASE_URL}/call/twilio/recording-callback"
         dial = response.dial(
+            timeout=120,
+            time_limit=7200,
             record="record-from-answer-dual",
             recording_status_callback=recording_callback,
             recording_status_callback_event="completed",
