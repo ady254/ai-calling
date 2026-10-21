@@ -18,6 +18,7 @@ from app.models.call_log import CallLog
 from app.dependencies.database import get_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.business import get_user_business
+from app.dependencies.ownership import get_owned_contact
 from app.core.rate_limit import limiter
 
 router = APIRouter()
@@ -190,16 +191,8 @@ async def contacts_pipeline(
 
 @router.get("/{contact_id}", response_model=ContactOut)
 async def get_contact_route(
-    contact_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    contact: Contact = Depends(get_owned_contact),
 ):
-    business = await get_user_business(db, user_id)
-    contact = await get_contact(db, contact_id)
-    if not contact:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    if str(contact.business_id) != str(business.id):
-        raise HTTPException(status_code=403, detail="Not authorized to access this contact")
     return contact
 
 
@@ -207,32 +200,18 @@ async def get_contact_route(
 async def update_contact_route(
     contact_id: UUID,
     data: ContactUpdate,
+    contact: Contact = Depends(get_owned_contact),
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
 ):
-    business = await get_user_business(db, user_id)
-    contact = await get_contact(db, contact_id)
-    if not contact:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    if str(contact.business_id) != str(business.id):
-        raise HTTPException(status_code=403, detail="Not authorized to access this contact")
-
     return await update_contact(db, contact_id, data)
 
 
 @router.delete("/{contact_id}")
 async def delete_contact_route(
     contact_id: UUID,
+    contact: Contact = Depends(get_owned_contact),
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
 ):
-    business = await get_user_business(db, user_id)
-    contact = await get_contact(db, contact_id)
-    if not contact:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    if str(contact.business_id) != str(business.id):
-        raise HTTPException(status_code=403, detail="Not authorized to access this contact")
-
     success = await delete_contact(db, contact_id)
     return {"success": success}
 

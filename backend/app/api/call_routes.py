@@ -1,49 +1,44 @@
-import time
-# Fix #32: All imports moved to the top of the file (previously split mid-file)
-import json
 import logging
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime, timedelta, timezone
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Header, Request, Response, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text, update
-from twilio.request_validator import RequestValidator
-from twilio.twiml.voice_response import VoiceResponse
-from livekit.api import AccessToken, VideoGrants, SIPParticipantInfo
+from sqlalchemy import select, func
 
-from app.services.call_service import start_call
 from app.dependencies.database import get_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.business import get_user_business
 from app.models.call_log import CallLog
 from app.models.contact import Contact
-from app.models.business import Business
 from app.models.campaign import Campaign, CampaignStatus
-from app.models.campaign_contact import CampaignContact, CampaignContactStatus
+from app.models.campaign_contact import CampaignContact
 from app.schemas.call_schema import CallLogCreate, CallLogOut, AnalyticsOut
 from app.schemas.analytics_schema import CampaignAnalytics, CallDetailOut
-from app.services import analytics_service
-from app.core.config import settings
 from app.core.rate_limit import limiter
-
-router = APIRouter()
-
-logger = logging.getLogger(__name__)
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CAMPAIGN EXECUTION (Start / Pause / Stop / Progress)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
+from app.services import analytics_service
+from app.services.call_service import start_call, fetch_call_recording_bytes
 from app.services.campaign_executor import (
     start_campaign_execution,
     pause_campaign_execution,
     stop_campaign_execution,
     get_campaign_progress,
 )
+from app.services.twilio_webhook_service import (
+    validate_twilio_signature,
+    generate_twiml,
+    handle_status_callback,
+    handle_recording_callback,
+    check_twilio_status,
+)
+
+router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CAMPAIGN EXECUTION (Start / Pause / Stop / Progress / Analytics)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.post("/campaign/{campaign_id}/start")
 @limiter.limit("30/minute")
@@ -51,18 +46,16 @@ async def start_campaign(
     request: Request,
     campaign_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
 ):
-    """Start executing a campaign — calls all pending contacts sequentially."""
+    """Start executing a campaign — calls all pending contacts concurrently."""
     business = await get_user_business(db, user_id)
-
     campaign = (await db.execute(
         select(Campaign).filter(Campaign.id == campaign_id, Campaign.business_id == business.id)
     )).scalar_one_or_none()
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-
     if campaign.status in [CampaignStatus.ACTIVE]:
         raise HTTPException(status_code=400, detail="Campaign is already running")
 
@@ -83,15 +76,13 @@ async def pause_campaign(
     request: Request,
     campaign_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
 ):
-    """Pause a running campaign. Pending contacts will not be called until resumed."""
+    """Pause a running campaign."""
     business = await get_user_business(db, user_id)
-
     campaign = (await db.execute(
         select(Campaign).filter(Campaign.id == campaign_id, Campaign.business_id == business.id)
     )).scalar_one_or_none()
-
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -105,15 +96,13 @@ async def stop_campaign(
     request: Request,
     campaign_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
 ):
     """Stop a campaign permanently. Sets status to CANCELLED."""
     business = await get_user_business(db, user_id)
-
     campaign = (await db.execute(
         select(Campaign).filter(Campaign.id == campaign_id, Campaign.business_id == business.id)
     )).scalar_one_or_none()
-
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -125,22 +114,19 @@ async def stop_campaign(
 async def campaign_progress(
     campaign_id: UUID,
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
 ):
-    """Get real-time progress of a campaign (pending/calling/completed/failed counts)."""
+    """Get real-time progress of a campaign."""
     business = await get_user_business(db, user_id)
-
     campaign = (await db.execute(
         select(Campaign).filter(Campaign.id == campaign_id, Campaign.business_id == business.id)
     )).scalar_one_or_none()
-
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     progress = await get_campaign_progress(db, campaign_id)
     if not progress:
         raise HTTPException(status_code=404, detail="Campaign not found")
-
     return progress
 
 
@@ -150,49 +136,14 @@ async def campaign_analytics(
     db: AsyncSession = Depends(get_db),
     user_id: str = Depends(get_current_user),
 ) -> CampaignAnalytics:
-    """Real per-campaign analytics for the Campaign Details page: KPIs,
-    funnel, progress, recent calls and timeline computed from call logs."""
+    """Per-campaign analytics computed via analytics service."""
     business = await get_user_business(db, user_id)
     return await analytics_service.get_campaign_analytics(db, campaign_id, business.id)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TWILIO WEBHOOKS
+# TWILIO WEBHOOKS & HEALTH
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-async def _validate_twilio_signature(request: Request) -> bool:
-    """
-    Validate that an incoming request genuinely came from Twilio.
-
-    Bug #1 fix: When sitting behind a reverse proxy (ngrok / nginx), FastAPI
-    sees the internal localhost URL, but Twilio signs the request with the
-    public-facing URL.  We reconstruct the public URL from X-Forwarded-Proto
-    and X-Forwarded-Host headers injected by the proxy.  Make sure you run
-    uvicorn with --proxy-headers so FastAPI trusts those headers.
-    """
-    if not settings.TWILIO_AUTH_TOKEN:
-        logger.warning("Twilio auth token not configured — skipping signature validation")
-        return True  # Allow in dev mode when Twilio isn't configured
-
-    validator = RequestValidator(settings.TWILIO_AUTH_TOKEN)
-
-    # Reconstruct the public URL Twilio actually called.
-    # X-Forwarded-Proto / X-Forwarded-Host are set by ngrok and most proxies.
-    forwarded_proto = request.headers.get("X-Forwarded-Proto")
-    forwarded_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host", "")
-    if forwarded_proto and forwarded_host:
-        # Rebuild: scheme://host/path?query
-        url = f"{forwarded_proto}://{forwarded_host}{request.url.path}"
-        if request.url.query:
-            url = f"{url}?{request.url.query}"
-    else:
-        url = str(request.url)
-
-    form = await request.form()
-    params = dict(form)
-    signature = request.headers.get("X-Twilio-Signature", "")
-    return validator.validate(url, params, signature)
-
 
 @router.post("/twilio/twiml")
 async def twilio_twiml(
@@ -200,177 +151,25 @@ async def twilio_twiml(
     campaign_id: Optional[str] = None,
     contact_id: Optional[str] = None,
 ):
-    """
-    Endpoint for Twilio to fetch TwiML instructions when a call connects.
-
-    Bug #3 fix: When LIVEKIT_SIP_DOMAIN is configured this bridges the Twilio
-    call into a per-call LiveKit room via SIP so the AI agent can handle the
-    conversation.  The room name encodes campaign + contact so the AI agent
-    worker knows which campaign/contact context to load.
-
-    Falls back to a static recorded greeting when SIP is not yet configured
-    (useful for smoke-testing Twilio connectivity without a LiveKit SIP trunk).
-    """
-    if not await _validate_twilio_signature(request):
+    """Endpoint for Twilio to fetch TwiML instructions when a call connects."""
+    if not await validate_twilio_signature(request):
         logger.warning("Invalid Twilio signature on TwiML request")
         raise HTTPException(status_code=403, detail="Invalid Twilio signature")
 
-    response = VoiceResponse()
-
-    if settings.LIVEKIT_SIP_DOMAIN:
-        # ── SIP bridge path (production) ──────────────────────────────────
-        # Build a unique room name for this call so the AI agent joins the
-        # right LiveKit room.  Pattern: call-<campaign_id>-<contact_id>
-        room_parts = ["call"]
-        if campaign_id:
-            room_parts.append(campaign_id)
-        if contact_id:
-            room_parts.append(contact_id)
-        room_name = "-".join(room_parts)
-
-        # Encode campaign/contact as SIP URI user-part so the LiveKit
-        # dispatch-rule (or the agent worker) can read them from the room name.
-        # SIP address: sip:<room>@<livekit-sip-domain>
-        # LIVEKIT_SIP_DOMAIN is a bare domain (LiveKit Console → SIP → Trunks),
-        # but strip an accidental "sip:" prefix so a misconfigured .env doesn't
-        # produce a double-scheme URI like "sip:room@sip:domain".
-        sip_domain = settings.LIVEKIT_SIP_DOMAIN.removeprefix("sip:")
-        sip_uri = f"sip:{room_name}@{sip_domain}"
-
-        logger.info(
-            f"TwiML: dialling LiveKit SIP {sip_uri} "
-            f"(campaign={campaign_id}, contact={contact_id})"
-        )
-
-        # Record the bridged conversation (both legs) so it can be played back
-        # in Call Details. Twilio POSTs the finished recording to the callback
-        # below, which stores the media URL against this call's CallLog row.
-        # timeout="120": Twilio aborts ringing if the SIP leg fails to pick up in 120s.
-        # time_limit=7200 (2h max duration guard): Prevents runaway billing if a room gets stuck.
-        recording_callback = f"{settings.BASE_URL}/call/twilio/recording-callback"
-        dial = response.dial(
-            timeout=120,
-            time_limit=7200,
-            record="record-from-answer-dual",
-            recording_status_callback=recording_callback,
-            recording_status_callback_event="completed",
-            recording_status_callback_method="POST",
-        )
-        dial.sip(sip_uri)
-
-    else:
-        # ── Fallback: static greeting (no SIP trunk configured yet) ───────
-        # This lets you confirm Twilio → ngrok → backend is working even
-        # before LiveKit SIP is set up.
-        logger.warning(
-            "LIVEKIT_SIP_DOMAIN not configured — playing static greeting. "
-            "Set LIVEKIT_SIP_DOMAIN in .env to enable the AI agent."
-        )
-        if campaign_id:
-            greeting = "Hello, you are being connected to our AI assistant."
-        else:
-            greeting = "Hello, this is an AI assistant calling on behalf of our team."
-
-        response.say(greeting, voice="Polly.Joanna")
-        response.pause(length=1)
-        response.say("Thank you for your time. Goodbye.", voice="Polly.Joanna")
-
-    return Response(content=str(response), media_type="text/xml")
+    twiml_content = generate_twiml(campaign_id, contact_id)
+    return Response(content=twiml_content, media_type="text/xml")
 
 
 @router.post("/twilio/status-callback")
 async def twilio_status_callback(request: Request, db: AsyncSession = Depends(get_db)):
-    """
-    Receives call status updates from Twilio.
-    Twilio sends: CallSid, CallStatus, CallDuration, To, From, etc.
-
-    Bug #2 fix: This is now the ONLY place that sets a CampaignContact to
-    COMPLETED or FAILED for real Twilio calls.  The campaign executor no longer
-    sets COMPLETED on "initiated" — it waits here.
-    """
-    if not await _validate_twilio_signature(request):
+    """Receives call status updates from Twilio."""
+    if not await validate_twilio_signature(request):
         logger.warning("Invalid Twilio signature on status callback")
         raise HTTPException(status_code=403, detail="Invalid Twilio signature")
 
     try:
         form = await request.form()
-        call_sid = form.get("CallSid", "")
-        call_status = form.get("CallStatus", "")
-        call_duration = form.get("CallDuration", "0")
-        to_number = form.get("To", "")
-
-        logger.info(
-            f"Twilio status callback: SID={call_sid}, "
-            f"Status={call_status}, Duration={call_duration}s, To={to_number}"
-        )
-
-        # Only act on terminal statuses (Twilio also sends 'initiated'/'ringing'
-        # events which we subscribed to, but those are not final).
-        terminal_status_map = {
-            "completed": "completed",
-            "busy": "failed",
-            "failed": "failed",
-            "no-answer": "failed",
-            "canceled": "failed",
-        }
-
-        if call_status in terminal_status_map and call_sid:
-            internal_status = terminal_status_map[call_status]
-
-            try:
-                duration_seconds = int(call_duration) if call_duration else 0
-            except ValueError:
-                duration_seconds = 0
-
-            # 1. Update the CallLog row
-            log_result = await db.execute(
-                update(CallLog)
-                .where(CallLog.call_sid == call_sid)
-                .values(status=internal_status, duration=duration_seconds)
-                .returning(CallLog.contact_id, CallLog.campaign_id)
-            )
-            await db.commit()
-
-            row = log_result.first()
-            if row:
-                logger.info(f"Call {call_sid} final status: {call_status} → {internal_status}")
-
-                # 2. Bug #2 fix: Update CampaignContact so the campaign executor
-                #    polling loop can see the contact has left CALLING state.
-                contact_id, campaign_id = row
-                if contact_id and campaign_id:
-                    contact_status = (
-                        CampaignContactStatus.COMPLETED
-                        if internal_status == "completed"
-                        else CampaignContactStatus.FAILED
-                    )
-                    await db.execute(
-                        update(CampaignContact)
-                        .where(
-                            CampaignContact.campaign_id == campaign_id,
-                            CampaignContact.contact_id == contact_id,
-                        )
-                        .values(call_status=contact_status)
-                    )
-                    await db.commit()
-                    logger.info(
-                        f"CampaignContact {contact_id} → {contact_status.value} "
-                        f"(campaign {campaign_id})"
-                    )
-
-                    # Event-driven resolution via Redis Pub/Sub (B2 Problem 3 fix)
-                    try:
-                        from app.services.campaign_executor import _notify_contact_resolution
-                        await _notify_contact_resolution(campaign_id, contact_id, contact_status.value)
-                    except Exception as pub_err:
-                        logger.debug(f"Could not publish resolution to Redis: {pub_err}")
-            else:
-                logger.warning(
-                    f"Status callback for unknown CallSid {call_sid} — no CallLog row updated"
-                )
-
-        return {"status": "ok"}
-
+        return await handle_status_callback(dict(form), db)
     except Exception as e:
         logger.error(f"Error processing Twilio status callback: {e}")
         return {"status": "error", "detail": str(e)}
@@ -378,70 +177,27 @@ async def twilio_status_callback(request: Request, db: AsyncSession = Depends(ge
 
 @router.post("/twilio/recording-callback")
 async def twilio_recording_callback(request: Request, db: AsyncSession = Depends(get_db)):
-    """
-    Receives the finished-recording notification from Twilio (fired by the
-    `recordingStatusCallback` set on the <Dial> verb in the TwiML above).
-
-    Twilio sends: CallSid, RecordingSid, RecordingUrl, RecordingStatus,
-    RecordingDuration. We store RecordingUrl against the CallLog row matching
-    CallSid; the audio itself is streamed to the frontend later via the
-    authenticated /call/logs/{id}/recording proxy (Twilio media requires auth).
-    """
-    if not await _validate_twilio_signature(request):
+    """Receives finished-recording notifications from Twilio."""
+    if not await validate_twilio_signature(request):
         logger.warning("Invalid Twilio signature on recording callback")
         raise HTTPException(status_code=403, detail="Invalid Twilio signature")
 
     try:
         form = await request.form()
-        call_sid = form.get("CallSid", "")
-        recording_url = form.get("RecordingUrl", "")
-        recording_status = form.get("RecordingStatus", "")
-        recording_duration = form.get("RecordingDuration", "0")
-
-        logger.info(
-            f"Twilio recording callback: CallSid={call_sid}, "
-            f"Status={recording_status}, Duration={recording_duration}s"
-        )
-
-        # Only persist a completed recording with a usable media URL.
-        if recording_status != "completed" or not call_sid or not recording_url:
-            return {"status": "ok"}
-
-        try:
-            rec_duration = int(recording_duration) if recording_duration else 0
-        except ValueError:
-            rec_duration = 0
-
-        # Store the media URL. Also backfill duration from the recording length
-        # when the status callback hasn't set one yet (COALESCE keeps any
-        # existing non-zero value).
-        result = await db.execute(
-            update(CallLog)
-            .where(CallLog.call_sid == call_sid)
-            .values(
-                recording_url=recording_url,
-                duration=func.coalesce(func.nullif(CallLog.duration, 0), rec_duration),
-            )
-            .returning(CallLog.id)
-        )
-        await db.commit()
-
-        if result.first():
-            logger.info(f"Recording saved for CallSid {call_sid}")
-        else:
-            logger.warning(
-                f"Recording callback for unknown CallSid {call_sid} — no CallLog updated"
-            )
-
-        return {"status": "ok"}
-
+        return await handle_recording_callback(dict(form), db)
     except Exception as e:
         logger.error(f"Error processing Twilio recording callback: {e}")
         return {"status": "error", "detail": str(e)}
 
 
+@router.get("/twilio/status")
+async def twilio_status(user_id: str = Depends(get_current_user)):
+    """Check whether Twilio credentials are configured and valid."""
+    return check_twilio_status()
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# SINGLE CALL + TWILIO HEALTH CHECK
+# SINGLE CALL & LOG MANAGEMENT
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.post("/start/{contact_id}")
@@ -450,81 +206,30 @@ async def start_call_route(
     request: Request,
     contact_id: str,
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
 ):
     """Start a single outbound call to a contact."""
     business = await get_user_business(db, user_id)
-    contact_stmt = select(Contact).filter(
-        Contact.id == UUID(contact_id),
-        Contact.business_id == business.id
-    )
-    result = await db.execute(contact_stmt)
-    contact = result.scalar_one_or_none()
+    contact = (await db.execute(
+        select(Contact).filter(Contact.id == UUID(contact_id), Contact.business_id == business.id)
+    )).scalar_one_or_none()
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found or not authorized")
 
     return await start_call(db, contact_id)
 
 
-@router.get("/twilio/status")
-async def twilio_status(user_id: str = Depends(get_current_user)):
-    """Check whether Twilio credentials are configured and valid."""
-    sid = settings.TWILIO_ACCOUNT_SID
-    token = settings.TWILIO_AUTH_TOKEN
-    phone = settings.TWILIO_PHONE_NUMBER
-
-    if not sid or not token:
-        return {
-            "status": "missing",
-            "message": "Twilio credentials are not configured.",
-            "phone_number": phone or None,
-        }
-
-    try:
-        from twilio.rest import Client
-        client = Client(sid, token)
-        account = client.api.accounts(sid).fetch()
-        return {
-            "status": "connected",
-            "message": "Twilio is connected and working.",
-            "account_name": account.friendly_name,
-            "account_status": account.status,
-            "phone_number": phone or "Not configured",
-            "account_sid_preview": f"{sid[:8]}...{sid[-4:]}",
-        }
-    except Exception as e:
-        error_msg = str(e)
-        if "authenticate" in error_msg.lower() or "20003" in error_msg:
-            hint = "Your Account SID or Auth Token is incorrect."
-        elif "not found" in error_msg.lower():
-            hint = "The Account SID doesn't match any Twilio account."
-        else:
-            hint = "Unexpected error verifying Twilio credentials."
-        return {
-            "status": "invalid",
-            "message": hint,
-            "error": error_msg,
-            "account_sid_preview": f"{sid[:8]}...{sid[-4:]}",
-        }
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CALL LOGS & ANALYTICS (tenant-scoped)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 @router.post("/log", response_model=CallLogOut)
 async def create_call_log(
     log_data: CallLogCreate,
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
 ):
     business = await get_user_business(db, user_id)
-    contact_stmt = select(Contact).filter(
-        Contact.id == log_data.contact_id,
-        Contact.business_id == business.id
-    )
-    result = await db.execute(contact_stmt)
-    if not result.scalar_one_or_none():
+    contact = (await db.execute(
+        select(Contact).filter(Contact.id == log_data.contact_id, Contact.business_id == business.id)
+    )).scalar_one_or_none()
+    if not contact:
         raise HTTPException(status_code=403, detail="Contact does not belong to your business")
 
     new_log = CallLog(
@@ -545,7 +250,7 @@ async def get_call_logs(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
 ):
     business = await get_user_business(db, user_id)
     stmt = (
@@ -565,8 +270,7 @@ async def get_call_detail(
     db: AsyncSession = Depends(get_db),
     user_id: str = Depends(get_current_user),
 ) -> CallDetailOut:
-    """Real Call Details for a single call — header, transcript, summary, and
-    the KPIs/intelligence derivable from stored data."""
+    """Real Call Details for a single call via analytics service."""
     business = await get_user_business(db, user_id)
     return await analytics_service.get_call_detail(db, log_id, business.id)
 
@@ -577,46 +281,11 @@ async def get_call_recording(
     db: AsyncSession = Depends(get_db),
     user_id: str = Depends(get_current_user),
 ):
-    """Authenticated proxy for a call's Twilio recording audio.
-
-    Twilio recording media requires account credentials, so the frontend can't
-    load it directly with an <audio> tag (which can't send the user's bearer
-    token either). Instead the browser fetches this endpoint with auth, and we
-    stream the audio from Twilio — scoped to the caller's business — back as MP3.
-    """
+    """Authenticated proxy for a call's Twilio recording audio."""
     business = await get_user_business(db, user_id)
-
-    log = (await db.execute(
-        select(CallLog).filter(CallLog.id == log_id, CallLog.business_id == business.id)
-    )).scalar_one_or_none()
-    if not log:
-        raise HTTPException(status_code=404, detail="Call not found")
-    if not log.recording_url:
-        raise HTTPException(status_code=404, detail="No recording for this call")
-
-    # Twilio media URLs serve MP3 when you append ".mp3"; auth is HTTP Basic
-    # with the account SID + auth token.
-    media_url = log.recording_url
-    if not media_url.endswith((".mp3", ".wav")):
-        media_url = f"{media_url}.mp3"
-    auth = (settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-
-    # Call recordings are small MP3s (a few MB even for long calls), and the
-    # frontend loads the result into a blob/object URL for playback, so a single
-    # buffered fetch is simplest and gives full client-side seeking.
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            upstream = await client.get(media_url, auth=auth)
-    except httpx.HTTPError as e:
-        logger.error(f"Twilio media fetch error for log {log_id}: {e}")
-        raise HTTPException(status_code=502, detail="Recording unavailable upstream")
-
-    if upstream.status_code != 200:
-        logger.error(f"Twilio media fetch failed ({upstream.status_code}) for log {log_id}")
-        raise HTTPException(status_code=502, detail="Recording unavailable upstream")
-
+    content = await fetch_call_recording_bytes(db, log_id, business.id)
     return Response(
-        content=upstream.content,
+        content=content,
         media_type="audio/mpeg",
         headers={"Cache-Control": "private, max-age=3600"},
     )
@@ -629,6 +298,3 @@ async def get_analytics(
 ) -> AnalyticsOut:
     business = await get_user_business(db, user_id)
     return await analytics_service.get_business_analytics(db, business.id)
-    
-
-

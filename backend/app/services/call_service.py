@@ -65,3 +65,37 @@ async def start_call(
         "phone_number": contact.phone_number,
         "twilio_response": call_result
     }
+
+
+async def fetch_call_recording_bytes(db: AsyncSession, log_id: UUID, business_id: UUID) -> bytes:
+    """
+    Fetch and return MP3 audio bytes for a call log from Twilio media URL with authentication.
+    """
+    import httpx
+    from app.core.config import settings
+
+    log = (await db.execute(
+        select(CallLog).filter(CallLog.id == log_id, CallLog.business_id == business_id)
+    )).scalar_one_or_none()
+    if not log:
+        raise HTTPException(status_code=404, detail="Call not found")
+    if not log.recording_url:
+        raise HTTPException(status_code=404, detail="No recording for this call")
+
+    media_url = log.recording_url
+    if not media_url.endswith((".mp3", ".wav")):
+        media_url = f"{media_url}.mp3"
+    auth = (settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            upstream = await client.get(media_url, auth=auth)
+    except httpx.HTTPError as e:
+        logger.error(f"Twilio media fetch error for log {log_id}: {e}")
+        raise HTTPException(status_code=502, detail="Recording unavailable upstream")
+
+    if upstream.status_code != 200:
+        logger.error(f"Twilio media fetch failed ({upstream.status_code}) for log {log_id}")
+        raise HTTPException(status_code=502, detail="Recording unavailable upstream")
+
+    return upstream.content
