@@ -66,8 +66,34 @@ async def process_campaign_task(ctx: dict, campaign_id: str, business_id: str) -
     logger.info(f"Worker finished campaign {campaign_id}")
 
 
+async def extract_outcome_task(ctx: dict, log_id: str, transcript: str) -> None:
+    """
+    ARQ task: extract structured call outcome from transcript and update CallLog.
+    Durable and retried automatically by ARQ with exponential backoff on failure.
+    """
+    from sqlalchemy import update
+    from app.db.session import AsyncSessionLocal
+    from app.models.call_log import CallLog
+    from app.services.ai_service import extract_call_outcome
+
+    logger.info(f"Worker processing outcome extraction for call_log {log_id}")
+    result = await extract_call_outcome(transcript)
+    if result:
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                update(CallLog)
+                .where(CallLog.id == UUID(log_id))
+                .values(**result)
+            )
+            await db.commit()
+        logger.info(f"Call log {log_id} outcome extracted: {result.get('outcome')}")
+    else:
+        logger.warning(f"Outcome extraction yielded no result for call_log {log_id}")
+
+
 class WorkerSettings:
-    functions = [process_campaign_task]
+    functions = [process_campaign_task, extract_outcome_task]
     redis_settings = parse_redis_url(settings.REDIS_URL)
+    max_tries = 3
     on_startup = startup
     on_shutdown = shutdown

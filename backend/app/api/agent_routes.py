@@ -249,14 +249,12 @@ async def _extract_and_store_outcome(call_log_id: UUID, transcript: str) -> None
 @router.post("/internal/call_log", tags=["Internal"])
 async def create_call_log_internal(
     data: dict,  # Using dict because we need both contact and campaign ID
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     _ = Depends(verify_internal_key)
 ):
     """
-    Saves a call log from the AI worker, then extracts a structured outcome
-    (confirmed / rescheduled / callback_requested / ...) from the transcript
-    in the background.
+    Saves a call log from the AI worker, then enqueues outcome extraction
+    into the durable ARQ worker queue with automatic retries.
     """
     campaign_id = UUID(data.get("campaign_id"))
     contact_id = UUID(data.get("contact_id"))
@@ -282,8 +280,15 @@ async def create_call_log_internal(
     await db.commit()
 
     if call_log.transcript:
-        background_tasks.add_task(
-            _extract_and_store_outcome, call_log.id, call_log.transcript
-        )
+        try:
+            from app.services.campaign_executor import _get_redis_pool
+            redis_pool = await _get_redis_pool()
+            await redis_pool.enqueue_job(
+                "extract_outcome_task", str(call_log.id), call_log.transcript
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to enqueue extract_outcome_task for log {call_log.id}: {e}"
+            )
 
     return {"status": "success"}

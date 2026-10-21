@@ -353,6 +353,13 @@ async def twilio_status_callback(request: Request, db: AsyncSession = Depends(ge
                         f"CampaignContact {contact_id} → {contact_status.value} "
                         f"(campaign {campaign_id})"
                     )
+
+                    # Event-driven resolution via Redis Pub/Sub (B2 Problem 3 fix)
+                    try:
+                        from app.services.campaign_executor import _notify_contact_resolution
+                        await _notify_contact_resolution(campaign_id, contact_id, contact_status.value)
+                    except Exception as pub_err:
+                        logger.debug(f"Could not publish resolution to Redis: {pub_err}")
             else:
                 logger.warning(
                     f"Status callback for unknown CallSid {call_sid} — no CallLog row updated"
