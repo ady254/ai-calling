@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, ForeignKey, DateTime, Text, Float
+from sqlalchemy import Column, String, ForeignKey, DateTime, Text, Float, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import uuid
@@ -20,6 +20,8 @@ class Agent(Base):
     # AI configuration
     system_prompt = Column(Text, nullable=False)
     prompt_template = Column(Text, nullable=True)
+    prompt_template_version = Column(Integer, default=1, nullable=False)
+    outcome_schema = Column(Text, nullable=True)
     language = Column(String(50), default="en")
     voice_id = Column(String(100), default="alloy")
     

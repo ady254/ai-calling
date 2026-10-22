@@ -73,7 +73,26 @@ class GeminiLLMProvider:
             contents=prompt,
             config=types.GenerateContentConfig(response_mime_type=response_mime_type),
         )
-        return response.text or ""
+
+        # Accessing response.text raises ValueError when Gemini returns no candidates
+        # (safety filter block, quota exhaustion, or empty output). Guard explicitly.
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            logger.warning("Gemini returned no candidates (prompt may have been blocked by safety filters).")
+            return ""
+
+        candidate = candidates[0]
+        finish_reason = getattr(candidate, "finish_reason", None)
+        # finish_reason 2 = SAFETY, 3 = RECITATION, 4 = OTHER (non-content stops)
+        if finish_reason is not None and str(finish_reason) not in ("0", "1", "FinishReason.STOP", "STOP"):
+            logger.warning("Gemini candidate finish_reason=%s — returning empty response.", finish_reason)
+            return ""
+
+        try:
+            return response.text or ""
+        except ValueError as exc:
+            logger.warning("Gemini response.text raised ValueError (%s) — returning empty.", exc)
+            return ""
 
 
 class OpenAILLMProvider:

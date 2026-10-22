@@ -82,22 +82,25 @@ async def extract_outcome_task(ctx: dict, log_id: str, transcript: str) -> None:
     logger.info(f"Worker processing outcome extraction for call_log {log_id}")
 
     prompt_template = None
+    outcome_schema = None
     async with AsyncSessionLocal() as db:
-        # Check if the call is tied to a campaign with an agent that has a custom prompt_template
+        # Check if the call is tied to a campaign with an agent that has custom prompt configuration
         log_row = (await db.execute(
             select(CallLog.campaign_id).where(CallLog.id == UUID(log_id))
         )).scalar_one_or_none()
 
         if log_row:
             agent_row = (await db.execute(
-                select(Agent.prompt_template)
+                select(Agent.prompt_template, Agent.outcome_schema)
                 .join(Campaign, Campaign.agent_id == Agent.id)
                 .where(Campaign.id == log_row)
-            )).scalar_one_or_none()
+            )).first()
             if agent_row:
-                prompt_template = agent_row
+                prompt_template, outcome_schema = agent_row
 
-    result = await extract_call_outcome(transcript, prompt_template=prompt_template)
+    result = await extract_call_outcome(
+        transcript, prompt_template=prompt_template, outcome_schema=outcome_schema
+    )
     if result:
         async with AsyncSessionLocal() as db:
             await db.execute(

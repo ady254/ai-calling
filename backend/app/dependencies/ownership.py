@@ -45,15 +45,18 @@ async def get_owned_agent(
     return agent
 
 
+from app.schemas.campaign_schema import CampaignOut
+
+
 async def get_owned_campaign(
     campaign_id: UUID,
     business: Business = Depends(get_user_business),
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> CampaignOut:
     """Validate campaign existence and ensure it belongs to the authenticated user's business."""
     campaign = await get_campaign(db, campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if campaign["business_id"] != business.id:
+    if campaign.business_id != business.id:
         raise HTTPException(status_code=403, detail="Not authorized to access this campaign")
     return campaign

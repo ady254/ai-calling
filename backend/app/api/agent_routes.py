@@ -173,7 +173,19 @@ async def get_campaign_config_internal(
         "max_retries": campaign.max_retries,
     }
 
-    # If there's a linked agent, override with agent settings
+    # Fetch business for client-specific variables (company name, industry, language)
+    biz_stmt = select(Business).filter(Business.id == campaign.business_id)
+    biz_result = await db.execute(biz_stmt)
+    business = biz_result.scalar_one_or_none()
+
+    variables: dict = {
+        "company_name": business.name if business else "",
+        "business_name": business.name if business else "",
+        "industry": business.industry if business else "",
+        "campaign_name": campaign.name,
+    }
+
+    # If there's a linked agent, override with agent settings & version
     if campaign.agent_id:
         agent = await get_agent(db, campaign.agent_id)
         if agent:
@@ -182,8 +194,9 @@ async def get_campaign_config_internal(
             config["language"] = agent.language
             config["stability"] = agent.stability
             config["similarity_boost"] = agent.similarity_boost
+            config["prompt_template_version"] = agent.prompt_template_version
+            config["outcome_schema"] = agent.outcome_schema
 
-    variables: dict = {}
     if contact_id:
         contact = (await db.execute(
             select(Contact).filter(
@@ -191,15 +204,16 @@ async def get_campaign_config_internal(
             )
         )).scalar_one_or_none()
         if contact:
-            variables = {
+            variables.update({
                 "name": contact.name,
                 "phone_number": contact.phone_number,
                 "email": contact.email,
-                "company": contact.company,
+                "company": contact.company or (business.name if business else ""),
                 **(contact.custom_fields or {}),
-            }
-            config["ai_prompt"] = render_template(config["ai_prompt"], variables)
+            })
 
+    # Render template variables into the prompt
+    config["ai_prompt"] = render_template(config["ai_prompt"], variables)
     config["variables"] = variables
     return config
 

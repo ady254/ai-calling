@@ -3,10 +3,10 @@ from sqlalchemy import select, func, delete, update
 from sqlalchemy.orm import selectinload
 from app.models.campaign import Campaign, CampaignStatus
 from app.models.campaign_contact import CampaignContact
-from app.schemas.campaign_schema import CampaignCreate, CampaignUpdate
+from app.schemas.campaign_schema import CampaignCreate, CampaignUpdate, CampaignOut
 from uuid import UUID
 
-async def create_campaign(db: AsyncSession, data: CampaignCreate):
+async def create_campaign(db: AsyncSession, data: CampaignCreate) -> Campaign:
     campaign = Campaign(
         business_id=data.business_id,
         name=data.name,
@@ -36,7 +36,7 @@ async def get_campaigns_by_business(
     business_id: UUID,
     skip: int = 0,
     limit: int = 50,
-):
+) -> list[CampaignOut]:
     # Get campaigns with contact count
     stmt = select(
         Campaign,
@@ -50,15 +50,15 @@ async def get_campaigns_by_business(
     result = await db.execute(stmt)
     rows = result.all()
 
-    campaigns = []
+    campaigns: list[CampaignOut] = []
     for campaign, contact_count in rows:
-        campaign_dict = campaign.__dict__.copy()
-        campaign_dict['contact_count'] = contact_count
-        campaigns.append(campaign_dict)
+        c_out = CampaignOut.model_validate(campaign)
+        c_out.contact_count = contact_count
+        campaigns.append(c_out)
 
     return campaigns
 
-async def get_campaign(db: AsyncSession, campaign_id: UUID):
+async def get_campaign(db: AsyncSession, campaign_id: UUID) -> CampaignOut | None:
     stmt = select(
         Campaign,
         func.count(CampaignContact.id).label('contact_count')
@@ -72,12 +72,12 @@ async def get_campaign(db: AsyncSession, campaign_id: UUID):
     row = result.first()
     if row:
         campaign, contact_count = row
-        campaign_dict = campaign.__dict__.copy()
-        campaign_dict['contact_count'] = contact_count
-        return campaign_dict
+        c_out = CampaignOut.model_validate(campaign)
+        c_out.contact_count = contact_count
+        return c_out
     return None
 
-async def update_campaign(db: AsyncSession, campaign_id: UUID, data: CampaignUpdate):
+async def update_campaign(db: AsyncSession, campaign_id: UUID, data: CampaignUpdate) -> CampaignOut | None:
     stmt = select(Campaign).filter(Campaign.id == campaign_id)
     result = await db.execute(stmt)
     campaign = result.scalar_one_or_none()

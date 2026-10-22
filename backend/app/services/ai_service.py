@@ -58,12 +58,13 @@ async def extract_call_outcome(
     transcript: str,
     llm_provider: LLMProvider | None = None,
     prompt_template: str | None = None,
+    outcome_schema: str | None = None,
 ) -> dict[str, Any] | None:
     """
     Analyze a finished call transcript and return
     {"outcome": ..., "summary": ..., "follow_up": ...} or None on failure.
 
-    Supports custom per-agent/client `prompt_template` (Worst Offender 3 fix).
+    Supports custom per-agent/client `prompt_template` and `outcome_schema` (Problem 2 fix).
     Supports dependency injection via `llm_provider`. If None, uses default provider.
     """
     if not transcript or len(transcript.strip()) < 20:
@@ -71,6 +72,9 @@ async def extract_call_outcome(
 
     try:
         template = prompt_template if (prompt_template and "{transcript}" in prompt_template) else _EXTRACTION_PROMPT
+        if outcome_schema:
+            template = f"{template}\n\nCustom Outcome Schema and Instructions:\n{outcome_schema}"
+
         formatted_prompt = template.format(transcript=transcript)
         if llm_provider is not None:
             raw = await llm_provider.complete(formatted_prompt, response_mime_type="application/json")

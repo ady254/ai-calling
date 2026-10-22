@@ -41,7 +41,7 @@ async def list_campaigns_route(
 
 @router.get("/{campaign_id}", response_model=CampaignOut)
 async def get_campaign_route(
-    campaign: dict = Depends(get_owned_campaign),
+    campaign: CampaignOut = Depends(get_owned_campaign),
 ):
     return campaign
 
@@ -49,7 +49,7 @@ async def get_campaign_route(
 async def update_campaign_route(
     campaign_id: UUID,
     data: CampaignUpdate,
-    campaign: dict = Depends(get_owned_campaign),
+    campaign: CampaignOut = Depends(get_owned_campaign),
     db: AsyncSession = Depends(get_db),
 ):
     return await update_campaign(db, campaign_id, data)
@@ -57,7 +57,7 @@ async def update_campaign_route(
 @router.delete("/{campaign_id}")
 async def delete_campaign_route(
     campaign_id: UUID,
-    campaign: dict = Depends(get_owned_campaign),
+    campaign: CampaignOut = Depends(get_owned_campaign),
     db: AsyncSession = Depends(get_db),
 ):
     success = await delete_campaign(db, campaign_id)
@@ -67,7 +67,7 @@ async def delete_campaign_route(
 async def add_contacts_route(
     campaign_id: UUID,
     data: CampaignContactAdd,
-    campaign: dict = Depends(get_owned_campaign),
+    campaign: CampaignOut = Depends(get_owned_campaign),
     db: AsyncSession = Depends(get_db),
 ):
     await add_contacts_to_campaign(db, campaign_id, data.contact_ids)
@@ -76,7 +76,7 @@ async def add_contacts_route(
 @router.post("/{campaign_id}/renew")
 async def renew_campaign_route(
     campaign_id: UUID,
-    campaign: dict = Depends(get_owned_campaign),
+    campaign: CampaignOut = Depends(get_owned_campaign),
     db: AsyncSession = Depends(get_db),
 ):
     await renew_campaign(db, campaign_id)
