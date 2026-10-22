@@ -35,6 +35,7 @@ from app.schemas.call_schema import CallLogCreate
 from app.dependencies.database import get_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.business import get_user_business
+from app.dependencies.ownership import get_owned_agent
 from app.core.config import settings
 from app.utils.templating import render_template
 from app.core.rate_limit import limiter
@@ -66,47 +67,25 @@ async def list_agents_route(
 
 @router.get("/{agent_id}", response_model=AgentOut)
 async def get_agent_route(
-    agent_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
+    agent: Agent = Depends(get_owned_agent),
 ):
-    business = await get_user_business(db, user_id)
-    agent = await get_agent(db, agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    if str(agent.business_id) != str(business.id):
-        raise HTTPException(status_code=403, detail="Not authorized to access this agent")
     return agent
 
 @router.put("/{agent_id}", response_model=AgentOut)
 async def update_agent_route(
     agent_id: UUID,
     data: AgentUpdate,
+    agent: Agent = Depends(get_owned_agent),
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
 ):
-    business = await get_user_business(db, user_id)
-    agent = await get_agent(db, agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    if str(agent.business_id) != str(business.id):
-        raise HTTPException(status_code=403, detail="Not authorized to access this agent")
-    
     return await update_agent(db, agent_id, data)
 
 @router.delete("/{agent_id}")
 async def delete_agent_route(
     agent_id: UUID,
+    agent: Agent = Depends(get_owned_agent),
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user)
 ):
-    business = await get_user_business(db, user_id)
-    agent = await get_agent(db, agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    if str(agent.business_id) != str(business.id):
-        raise HTTPException(status_code=403, detail="Not authorized to access this agent")
-    
     success = await delete_agent(db, agent_id)
     return {"success": success}
 
