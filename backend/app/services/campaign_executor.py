@@ -23,7 +23,7 @@ import arq
 import redis.exceptions
 from arq.connections import RedisSettings
 from fastapi import HTTPException
-from sqlalchemy import select, update, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -33,6 +33,7 @@ from app.models.campaign_contact import CampaignContact, CampaignContactStatus
 from app.models.contact import Contact, ContactStatus
 from app.models.call_log import CallLog
 from app.providers import TelephonyProvider, get_telephony_provider
+from app.repositories import CampaignRepository, CallLogRepository, ContactRepository
 from app.services.twilio_service import make_outbound_call
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,7 @@ async def recover_orphaned_contacts() -> None:
     Should be called at application startup to recover from a crash/restart.
     This prevents contacts from being permanently orphaned after a process restart.
     """
+    from sqlalchemy import update
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             update(CampaignContact)
@@ -137,12 +139,7 @@ async def pause_campaign_execution(campaign_id: UUID) -> dict:
         await redis.aclose()
 
     async with AsyncSessionLocal() as db:
-        await db.execute(
-            update(Campaign)
-            .where(Campaign.id == campaign_id)
-            .values(status=CampaignStatus.PAUSED)
-        )
-        await db.commit()
+        await CampaignRepository(db).set_status(campaign_id, CampaignStatus.PAUSED)
 
     logger.info(f"Campaign {campaign_id} paused via Redis flag")
     return {"status": "paused"}
@@ -162,12 +159,7 @@ async def stop_campaign_execution(campaign_id: UUID) -> dict:
         await redis.aclose()
 
     async with AsyncSessionLocal() as db:
-        await db.execute(
-            update(Campaign)
-            .where(Campaign.id == campaign_id)
-            .values(status=CampaignStatus.CANCELLED)
-        )
-        await db.commit()
+        await CampaignRepository(db).set_status(campaign_id, CampaignStatus.CANCELLED)
 
     logger.info(f"Campaign {campaign_id} stopped/cancelled via Redis flag")
     return {"status": "cancelled"}
@@ -175,24 +167,14 @@ async def stop_campaign_execution(campaign_id: UUID) -> dict:
 
 async def get_campaign_progress(db: AsyncSession, campaign_id: UUID) -> dict | None:
     """Get real-time progress of a campaign."""
+    repo = CampaignRepository(db)
 
-    # Get campaign
-    campaign = (await db.execute(
-        select(Campaign).filter(Campaign.id == campaign_id)
-    )).scalar_one_or_none()
-
+    campaign = await repo.get_by_id(campaign_id)
     if not campaign:
         return None
 
-    # Fix #6: Replace N+1 per-enum queries with a single GROUP BY query.
-    # Previously this ran one SELECT per enum value (5 queries); now it's 1.
-    rows = (await db.execute(
-        select(CampaignContact.call_status, func.count(CampaignContact.id))
-        .where(CampaignContact.campaign_id == campaign_id)
-        .group_by(CampaignContact.call_status)
-    )).all()
-
-    status_counts: dict[str, int] = {row[0].value: row[1] for row in rows}
+    # Single GROUP BY query via repository (N+1 fix preserved).
+    status_counts = await repo.get_contact_status_counts(campaign_id)
 
     total = sum(status_counts.values())
     completed = status_counts.get("completed", 0)
@@ -200,7 +182,6 @@ async def get_campaign_progress(db: AsyncSession, campaign_id: UUID) -> dict | N
     calling = status_counts.get("calling", 0)
     pending = status_counts.get("pending", 0)
 
-    # Derive is_running from the DB campaign status (set by the ARQ worker).
     is_running = campaign.status == CampaignStatus.ACTIVE
 
     return {
@@ -243,39 +224,12 @@ async def _fetch_all_pending(campaign_id: UUID) -> list[UUID]:
     Returns empty list if no pending contacts remain.
     """
     async with AsyncSessionLocal() as db:
-        stmt = (
-            select(CampaignContact.contact_id)
-            .filter(
-                CampaignContact.campaign_id == campaign_id,
-                CampaignContact.call_status == CampaignContactStatus.PENDING,
-            )
-            .order_by(CampaignContact.created_at.asc())
-        )
-        result = await db.execute(stmt)
-        return list(result.scalars().all())
-
-
-async def _fetch_next_pending_contact(campaign_id: UUID) -> UUID | None:
-    """
-    Fetch the next pending contact ID for this campaign in FIFO order.
-    Returns None if no pending contacts remain.
-    """
-    async with AsyncSessionLocal() as db:
-        stmt = (
-            select(CampaignContact.contact_id)
-            .filter(
-                CampaignContact.campaign_id == campaign_id,
-                CampaignContact.call_status == CampaignContactStatus.PENDING,
-            )
-            .order_by(CampaignContact.created_at.asc())
-            .limit(1)
-        )
-        result = await db.execute(stmt)
-        return result.scalar_one_or_none()
+        return await CampaignRepository(db).list_pending_contact_ids(campaign_id)
 
 
 async def _mark_calling(campaign_id: UUID, contact_id: UUID) -> None:
     """Update contact state to CALLING and record dial timestamp."""
+    from sqlalchemy import update
     async with AsyncSessionLocal() as db:
         await db.execute(
             update(CampaignContact)
@@ -294,12 +248,7 @@ async def _mark_calling(campaign_id: UUID, contact_id: UUID) -> None:
 async def _finalize_campaign(campaign_id: UUID, status: CampaignStatus) -> None:
     """Update campaign terminal or pause status."""
     async with AsyncSessionLocal() as db:
-        await db.execute(
-            update(Campaign)
-            .where(Campaign.id == campaign_id)
-            .values(status=status)
-        )
-        await db.commit()
+        await CampaignRepository(db).set_status(campaign_id, status)
     logger.info(f"Campaign {campaign_id} status updated to {status.value if hasattr(status, 'value') else status}")
 
 
@@ -372,9 +321,7 @@ async def _call_single_contact(
 ) -> None:
     """Process a single contact: make outbound call via TelephonyProvider."""
     async with AsyncSessionLocal() as db:
-        contact = (await db.execute(
-            select(Contact).filter(Contact.id == contact_id)
-        )).scalar_one_or_none()
+        contact = await ContactRepository(db).get_by_id(contact_id)
 
         if not contact or not contact.phone_number:
             logger.warning(f"Skipping contact {contact_id}: no phone number")
@@ -447,15 +394,7 @@ async def _update_contact_status(
 ) -> None:
     """Update a CampaignContact's call_status."""
     async with AsyncSessionLocal() as db:
-        await db.execute(
-            update(CampaignContact)
-            .where(
-                CampaignContact.campaign_id == campaign_id,
-                CampaignContact.contact_id == contact_id,
-            )
-            .values(call_status=status)
-        )
-        await db.commit()
+        await CampaignRepository(db).set_contact_status(campaign_id, contact_id, status)
 
 
 async def _wait_for_contact_resolution(
@@ -478,12 +417,7 @@ async def _wait_for_contact_resolution(
 
     # Initial check: call might already have resolved (e.g. simulated call or instant error)
     async with AsyncSessionLocal() as db:
-        row = (await db.execute(
-            select(CampaignContact.call_status).where(
-                CampaignContact.campaign_id == campaign_id,
-                CampaignContact.contact_id == contact_id,
-            )
-        )).scalar_one_or_none()
+        row = await CampaignRepository(db).get_contact_status(campaign_id, contact_id)
 
     if row is None or row in _terminal:
         return
@@ -523,12 +457,7 @@ async def _wait_for_contact_resolution(
 
     # Final check / timeout enforcement: ensure status is updated if not yet resolved
     async with AsyncSessionLocal() as db:
-        final_row = (await db.execute(
-            select(CampaignContact.call_status).where(
-                CampaignContact.campaign_id == campaign_id,
-                CampaignContact.contact_id == contact_id,
-            )
-        )).scalar_one_or_none()
+        final_row = await CampaignRepository(db).get_contact_status(campaign_id, contact_id)
 
     if final_row not in _terminal:
         await _update_contact_status(campaign_id, contact_id, CampaignContactStatus.FAILED)

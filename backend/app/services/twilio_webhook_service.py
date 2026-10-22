@@ -5,7 +5,7 @@ Separated from call_routes.py to enforce single responsibility and code cleanlin
 import logging
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import update, func
+from sqlalchemy import func
 from fastapi import Request
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse
@@ -13,6 +13,7 @@ from twilio.twiml.voice_response import VoiceResponse
 from app.core.config import settings
 from app.models.call_log import CallLog
 from app.models.campaign_contact import CampaignContact, CampaignContactStatus
+from app.repositories import CallLogRepository, CampaignRepository
 
 logger = logging.getLogger(__name__)
 
@@ -126,34 +127,22 @@ async def handle_status_callback(form_data: dict, db: AsyncSession) -> dict:
         except ValueError:
             duration_seconds = 0
 
-        # 1. Update the CallLog row
-        log_result = await db.execute(
-            update(CallLog)
-            .where(CallLog.call_sid == call_sid)
-            .values(status=internal_status, duration=duration_seconds)
-            .returning(CallLog.contact_id, CallLog.campaign_id)
+        # 1. Update the CallLog row via repository
+        contact_id, campaign_id = await CallLogRepository(db).update_status_by_sid(
+            call_sid, internal_status, duration_seconds
         )
-        await db.commit()
 
-        row = log_result.first()
-        if row:
+        if contact_id:
             logger.info(f"Call {call_sid} final status: {call_status} → {internal_status}")
-            contact_id, campaign_id = row
-            if contact_id and campaign_id:
+            if campaign_id:
                 contact_status = (
                     CampaignContactStatus.COMPLETED
                     if internal_status == "completed"
                     else CampaignContactStatus.FAILED
                 )
-                await db.execute(
-                    update(CampaignContact)
-                    .where(
-                        CampaignContact.campaign_id == campaign_id,
-                        CampaignContact.contact_id == contact_id,
-                    )
-                    .values(call_status=contact_status)
+                await CampaignRepository(db).set_contact_status(
+                    campaign_id, contact_id, contact_status
                 )
-                await db.commit()
                 logger.info(
                     f"CampaignContact {contact_id} → {contact_status.value} "
                     f"(campaign {campaign_id})"
@@ -193,18 +182,10 @@ async def handle_recording_callback(form_data: dict, db: AsyncSession) -> dict:
     except ValueError:
         rec_duration = 0
 
-    result = await db.execute(
-        update(CallLog)
-        .where(CallLog.call_sid == call_sid)
-        .values(
-            recording_url=recording_url,
-            duration=func.coalesce(func.nullif(CallLog.duration, 0), rec_duration),
-        )
-        .returning(CallLog.id)
+    saved = await CallLogRepository(db).update_recording_by_sid(
+        call_sid, recording_url, rec_duration
     )
-    await db.commit()
-
-    if result.first():
+    if saved:
         logger.info(f"Recording saved for CallSid {call_sid}")
     else:
         logger.warning(f"Recording callback for unknown CallSid {call_sid} — no CallLog updated")

@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import func
 
 from app.dependencies.database import get_db
 from app.dependencies.auth import get_current_user
@@ -13,6 +13,7 @@ from app.models.call_log import CallLog
 from app.models.contact import Contact
 from app.models.campaign import Campaign, CampaignStatus
 from app.models.campaign_contact import CampaignContact
+from app.repositories import CampaignRepository, ContactRepository, CallLogRepository
 from app.schemas.call_schema import CallLogCreate, CallLogOut, AnalyticsOut
 from app.schemas.analytics_schema import CampaignAnalytics, CallDetailOut
 from app.core.rate_limit import limiter
@@ -50,19 +51,19 @@ async def start_campaign(
 ):
     """Start executing a campaign — calls all pending contacts concurrently."""
     business = await get_user_business(db, user_id)
-    campaign = (await db.execute(
-        select(Campaign).filter(Campaign.id == campaign_id, Campaign.business_id == business.id)
-    )).scalar_one_or_none()
-
-    if not campaign:
+    repo = CampaignRepository(db)
+    campaign = await repo.get_by_id(campaign_id)
+    if not campaign or campaign.business_id != business.id:
         raise HTTPException(status_code=404, detail="Campaign not found")
     if campaign.status in [CampaignStatus.ACTIVE]:
         raise HTTPException(status_code=400, detail="Campaign is already running")
 
-    contact_count = (await db.execute(
-        select(func.count(CampaignContact.id)).where(CampaignContact.campaign_id == campaign_id)
-    )).scalar() or 0
-
+    pending_ids = await repo.list_pending_contact_ids(campaign_id)
+    contact_count = len(pending_ids)
+    if contact_count == 0:
+        # Fallback: count all contacts, not just pending
+        status_counts = await repo.get_contact_status_counts(campaign_id)
+        contact_count = sum(status_counts.values())
     if contact_count == 0:
         raise HTTPException(status_code=400, detail="No contacts assigned to this campaign")
 
@@ -80,10 +81,8 @@ async def pause_campaign(
 ):
     """Pause a running campaign."""
     business = await get_user_business(db, user_id)
-    campaign = (await db.execute(
-        select(Campaign).filter(Campaign.id == campaign_id, Campaign.business_id == business.id)
-    )).scalar_one_or_none()
-    if not campaign:
+    campaign = await CampaignRepository(db).get_by_id(campaign_id)
+    if not campaign or campaign.business_id != business.id:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     result = await pause_campaign_execution(campaign_id)
@@ -100,10 +99,8 @@ async def stop_campaign(
 ):
     """Stop a campaign permanently. Sets status to CANCELLED."""
     business = await get_user_business(db, user_id)
-    campaign = (await db.execute(
-        select(Campaign).filter(Campaign.id == campaign_id, Campaign.business_id == business.id)
-    )).scalar_one_or_none()
-    if not campaign:
+    campaign = await CampaignRepository(db).get_by_id(campaign_id)
+    if not campaign or campaign.business_id != business.id:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     result = await stop_campaign_execution(campaign_id)
@@ -118,10 +115,8 @@ async def campaign_progress(
 ):
     """Get real-time progress of a campaign."""
     business = await get_user_business(db, user_id)
-    campaign = (await db.execute(
-        select(Campaign).filter(Campaign.id == campaign_id, Campaign.business_id == business.id)
-    )).scalar_one_or_none()
-    if not campaign:
+    campaign = await CampaignRepository(db).get_by_id(campaign_id)
+    if not campaign or campaign.business_id != business.id:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     progress = await get_campaign_progress(db, campaign_id)
@@ -210,10 +205,8 @@ async def start_call_route(
 ):
     """Start a single outbound call to a contact."""
     business = await get_user_business(db, user_id)
-    contact = (await db.execute(
-        select(Contact).filter(Contact.id == UUID(contact_id), Contact.business_id == business.id)
-    )).scalar_one_or_none()
-    if not contact:
+    contact = await ContactRepository(db).get_by_id(UUID(contact_id))
+    if not contact or contact.business_id != business.id:
         raise HTTPException(status_code=404, detail="Contact not found or not authorized")
 
     return await start_call(db, contact_id)
@@ -226,10 +219,8 @@ async def create_call_log(
     user_id: str = Depends(get_current_user),
 ):
     business = await get_user_business(db, user_id)
-    contact = (await db.execute(
-        select(Contact).filter(Contact.id == log_data.contact_id, Contact.business_id == business.id)
-    )).scalar_one_or_none()
-    if not contact:
+    contact = await ContactRepository(db).get_by_id(log_data.contact_id)
+    if not contact or contact.business_id != business.id:
         raise HTTPException(status_code=403, detail="Contact does not belong to your business")
 
     new_log = CallLog(
@@ -253,15 +244,8 @@ async def get_call_logs(
     user_id: str = Depends(get_current_user),
 ):
     business = await get_user_business(db, user_id)
-    stmt = (
-        select(CallLog)
-        .filter(CallLog.business_id == business.id)
-        .order_by(CallLog.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-    )
-    result = await db.execute(stmt)
-    return result.scalars().all()
+    logs = await CallLogRepository(db).list_by_business(business.id, skip=skip, limit=limit)
+    return logs
 
 
 @router.get("/logs/{log_id}", response_model=CallDetailOut)

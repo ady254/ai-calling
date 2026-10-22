@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select
 from uuid import UUID
 from typing import List, Optional
 import io
@@ -39,6 +39,7 @@ from app.dependencies.ownership import get_owned_agent
 from app.core.config import settings
 from app.utils.templating import render_template
 from app.core.rate_limit import limiter
+from app.repositories import CampaignRepository, ContactRepository, CallLogRepository
 from fastapi import Header
 
 router = APIRouter()
@@ -158,10 +159,7 @@ async def get_campaign_config_internal(
     appointment with {{doctor_name}} on {{appointment_date}}.").
     """
     # Fetch campaign
-    stmt = select(Campaign).filter(Campaign.id == campaign_id)
-    result = await db.execute(stmt)
-    campaign = result.scalar_one_or_none()
-
+    campaign = await CampaignRepository(db).get_by_id(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -174,9 +172,9 @@ async def get_campaign_config_internal(
     }
 
     # Fetch business for client-specific variables (company name, industry, language)
-    biz_stmt = select(Business).filter(Business.id == campaign.business_id)
-    biz_result = await db.execute(biz_stmt)
-    business = biz_result.scalar_one_or_none()
+    business = (await db.execute(
+        select(Business).filter(Business.id == campaign.business_id)
+    )).scalar_one_or_none()
 
     variables: dict = {
         "company_name": business.name if business else "",
@@ -198,12 +196,8 @@ async def get_campaign_config_internal(
             config["outcome_schema"] = agent.outcome_schema
 
     if contact_id:
-        contact = (await db.execute(
-            select(Contact).filter(
-                Contact.id == contact_id, Contact.business_id == campaign.business_id
-            )
-        )).scalar_one_or_none()
-        if contact:
+        contact = await ContactRepository(db).get_by_id(contact_id)
+        if contact and contact.business_id == campaign.business_id:
             variables.update({
                 "name": contact.name,
                 "phone_number": contact.phone_number,
@@ -230,14 +224,13 @@ async def _extract_and_store_outcome(call_log_id: UUID, transcript: str) -> None
 
     prompt_template = None
     async with AsyncSessionLocal() as db:
-        log_row = (await db.execute(
-            select(CallLog.campaign_id).where(CallLog.id == call_log_id)
-        )).scalar_one_or_none()
-        if log_row:
+        call_log_repo = CallLogRepository(db)
+        log_row = await call_log_repo.get_by_id(call_log_id)
+        if log_row and log_row.campaign_id:
             agent_row = (await db.execute(
                 select(Agent.prompt_template)
                 .join(Campaign, Campaign.agent_id == Agent.id)
-                .where(Campaign.id == log_row)
+                .where(Campaign.id == log_row.campaign_id)
             )).scalar_one_or_none()
             if agent_row:
                 prompt_template = agent_row
@@ -247,10 +240,12 @@ async def _extract_and_store_outcome(call_log_id: UUID, transcript: str) -> None
         return
 
     async with AsyncSessionLocal() as db:
-        await db.execute(
-            update(CallLog).where(CallLog.id == call_log_id).values(**result)
+        await CallLogRepository(db).update_outcome(
+            call_log_id,
+            result.get("outcome"),
+            result.get("summary"),
+            result.get("follow_up"),
         )
-        await db.commit()
     logger.info(f"Call log {call_log_id} outcome extracted: {result.get('outcome')}")
 
 
@@ -268,10 +263,7 @@ async def create_call_log_internal(
     contact_id = UUID(data.get("contact_id"))
 
     # Get campaign to find business_id
-    stmt = select(Campaign).filter(Campaign.id == campaign_id)
-    result = await db.execute(stmt)
-    campaign = result.scalar_one_or_none()
-
+    campaign = await CampaignRepository(db).get_by_id(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 

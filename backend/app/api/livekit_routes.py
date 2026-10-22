@@ -4,7 +4,6 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.livekit_service import create_room_token
@@ -13,8 +12,7 @@ from app.dependencies.business import get_user_business
 from app.dependencies.database import get_db
 from app.core.config import settings
 from app.core.rate_limit import limiter
-from app.models.campaign import Campaign
-from app.models.contact import Contact
+from app.repositories import CampaignRepository, ContactRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -52,21 +50,13 @@ async def get_token(
     business = await get_user_business(db, user_id)
 
     if campaign_id:
-        campaign = (await db.execute(
-            select(Campaign).filter(
-                Campaign.id == campaign_id, Campaign.business_id == business.id
-            )
-        )).scalar_one_or_none()
-        if not campaign:
+        campaign = await CampaignRepository(db).get_by_id(campaign_id)
+        if not campaign or campaign.business_id != business.id:
             raise HTTPException(status_code=403, detail="Campaign not found or not authorized")
 
     if contact_id:
-        contact = (await db.execute(
-            select(Contact).filter(
-                Contact.id == contact_id, Contact.business_id == business.id
-            )
-        )).scalar_one_or_none()
-        if not contact:
+        contact = await ContactRepository(db).get_by_id(contact_id)
+        if not contact or contact.business_id != business.id:
             raise HTTPException(status_code=403, detail="Contact not found or not authorized")
 
     metadata = {}

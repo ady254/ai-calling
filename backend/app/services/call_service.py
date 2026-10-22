@@ -3,12 +3,12 @@ import logging
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from fastapi import HTTPException
 
 from app.models.contact import Contact, ContactStatus
 from app.models.call_log import CallLog
 from app.providers import TelephonyProvider, get_telephony_provider
+from app.repositories import CallLogRepository, ContactRepository
 from app.services.twilio_service import make_outbound_call
 
 logger = logging.getLogger(__name__)
@@ -23,9 +23,7 @@ async def start_call(
     Initiate an outbound call via TelephonyProvider to the contact.
     Optionally pass campaign_id for context.
     """
-    stmt = select(Contact).filter(Contact.id == UUID(contact_id))
-    result = await db.execute(stmt)
-    contact = result.scalar_one_or_none()
+    contact = await ContactRepository(db).get_by_id(UUID(contact_id))
 
     if not contact:
         raise HTTPException(status_code=404, detail="Contact not found")
@@ -74,9 +72,7 @@ async def fetch_call_recording_bytes(db: AsyncSession, log_id: UUID, business_id
     import httpx
     from app.core.config import settings
 
-    log = (await db.execute(
-        select(CallLog).filter(CallLog.id == log_id, CallLog.business_id == business_id)
-    )).scalar_one_or_none()
+    log = await CallLogRepository(db).get_by_id_and_business(log_id, business_id)
     if not log:
         raise HTTPException(status_code=404, detail="Call not found")
     if not log.recording_url:
