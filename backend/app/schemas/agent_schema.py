@@ -8,6 +8,7 @@ class AgentBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     system_prompt: str = Field(..., min_length=1)
+    prompt_template: Optional[str] = Field(None, description="Custom outcome extraction prompt template")
     language: str = Field(default="en")
     voice_id: str = Field(default="alloy")
     stability: float = Field(default=0.5, ge=0, le=1)
@@ -22,6 +23,7 @@ class AgentUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     system_prompt: Optional[str] = None
+    prompt_template: Optional[str] = None
     language: Optional[str] = None
     voice_id: Optional[str] = None
     stability: Optional[float] = Field(None, ge=0, le=1)

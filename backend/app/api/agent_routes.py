@@ -207,13 +207,28 @@ async def _extract_and_store_outcome(call_log_id: UUID, transcript: str) -> None
     """
     Background task: run LLM outcome extraction on a finished call's
     transcript and write the result onto the CallLog row. Runs after the
-    response is sent, with its own DB session — a failure here (e.g. a
-    Gemini rate limit) leaves outcome null but never loses the call log.
+    response is sent, with its own DB session.
     """
     from app.db.session import AsyncSessionLocal
     from app.services.ai_service import extract_call_outcome
+    from app.models.campaign import Campaign
+    from app.models.agent import Agent
 
-    result = await extract_call_outcome(transcript)
+    prompt_template = None
+    async with AsyncSessionLocal() as db:
+        log_row = (await db.execute(
+            select(CallLog.campaign_id).where(CallLog.id == call_log_id)
+        )).scalar_one_or_none()
+        if log_row:
+            agent_row = (await db.execute(
+                select(Agent.prompt_template)
+                .join(Campaign, Campaign.agent_id == Agent.id)
+                .where(Campaign.id == log_row)
+            )).scalar_one_or_none()
+            if agent_row:
+                prompt_template = agent_row
+
+    result = await extract_call_outcome(transcript, prompt_template=prompt_template)
     if not result:
         return
 

@@ -69,15 +69,35 @@ async def process_campaign_task(ctx: dict, campaign_id: str, business_id: str) -
 async def extract_outcome_task(ctx: dict, log_id: str, transcript: str) -> None:
     """
     ARQ task: extract structured call outcome from transcript and update CallLog.
+    Supports per-agent custom prompt_template if defined on the associated agent.
     Durable and retried automatically by ARQ with exponential backoff on failure.
     """
-    from sqlalchemy import update
+    from sqlalchemy import select, update
     from app.db.session import AsyncSessionLocal
     from app.models.call_log import CallLog
+    from app.models.campaign import Campaign
+    from app.models.agent import Agent
     from app.services.ai_service import extract_call_outcome
 
     logger.info(f"Worker processing outcome extraction for call_log {log_id}")
-    result = await extract_call_outcome(transcript)
+
+    prompt_template = None
+    async with AsyncSessionLocal() as db:
+        # Check if the call is tied to a campaign with an agent that has a custom prompt_template
+        log_row = (await db.execute(
+            select(CallLog.campaign_id).where(CallLog.id == UUID(log_id))
+        )).scalar_one_or_none()
+
+        if log_row:
+            agent_row = (await db.execute(
+                select(Agent.prompt_template)
+                .join(Campaign, Campaign.agent_id == Agent.id)
+                .where(Campaign.id == log_row)
+            )).scalar_one_or_none()
+            if agent_row:
+                prompt_template = agent_row
+
+    result = await extract_call_outcome(transcript, prompt_template=prompt_template)
     if result:
         async with AsyncSessionLocal() as db:
             await db.execute(

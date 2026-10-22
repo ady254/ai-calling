@@ -19,6 +19,7 @@ class Agent(Base):
     
     # AI configuration
     system_prompt = Column(Text, nullable=False)
+    prompt_template = Column(Text, nullable=True)
     language = Column(String(50), default="en")
     voice_id = Column(String(100), default="alloy")
     
